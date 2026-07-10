@@ -46,8 +46,8 @@ class MiotAccessory(Accessory):
 
     # 传感器默认轮询间隔（秒）
     SENSOR_POLL_INTERVAL = 30
-    # 控制类设备轮询间隔（秒）— 较低频率，仅用于同步外部状态变化
-    CONTROL_POLL_INTERVAL = 60
+    # 控制类设备 fallback 轮询间隔（秒）— LAN 回调为主，轮询为辅
+    CONTROL_POLL_INTERVAL = 300
 
     def __init__(
         self,
@@ -102,6 +102,8 @@ class MiotAccessory(Accessory):
         self._poll_task: Optional[asyncio.Task] = None
         # 初始状态读取任务
         self._init_task: Optional[asyncio.Task] = None
+        # 是否已注册 LAN 状态回调
+        self._lan_cb_registered = False
 
     # ── 主服务构建 ──────────────────────────────────
 
@@ -458,17 +460,39 @@ class MiotAccessory(Accessory):
     # ── 轮询 ────────────────────────────────────────
 
     async def start_polling(self):
-        """启动轮询（传感器 + 控制类设备）。"""
+        """启动轮询（传感器 + 控制类设备 fallback）。"""
         if self._poll_task:
             return
         self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def fetch_initial_state(self):
-        """启动时读取设备初始状态（非传感器设备）。"""
+        """启动时读取设备初始状态 + 注册实时回调。"""
         if self._is_sensor():
+            await self.start_polling()
             return
-        # 启动控制类设备轮询（首次立即读取，之后定期同步）
-        await self.start_polling()
+
+        # 1. 读取初始状态
+        await self._do_fetch_initial()
+
+        # 2. 注册 LAN 设备状态变化回调（实时推送，替代轮询）
+        if not self._lan_cb_registered and self._proxy._client:
+            try:
+                from miot.types import MIoTLanDeviceInfo
+                did = self._dev.did
+                async def _on_lan_changed(did_: str, info):
+                    _LOGGER.debug("LAN 状态变化 %s: %s", self._dev.name, info)
+                    # 设备属性可能变了，读取最新状态
+                    await self._do_fetch_initial()
+                await self._proxy._client.register_lan_device_changed_async(
+                    did, _on_lan_changed
+                )
+                self._lan_cb_registered = True
+                _LOGGER.debug("已注册 LAN 回调: %s", self._dev.name)
+            except Exception as e:
+                _LOGGER.debug("注册 LAN 回调失败 %s: %s", self._dev.name, e)
+
+        # 3. 低频轮询作为 fallback（5分钟，防止 LAN 回调遗漏）
+        self._poll_task = asyncio.create_task(self._fallback_poll_loop())
 
     async def _do_fetch_initial(self):
         """读取设备当前状态并更新 HomeKit characteristic。"""
@@ -535,25 +559,28 @@ class MiotAccessory(Accessory):
             self._poll_task = None
 
     async def _poll_loop(self):
-        """定期读取设备值并更新 HomeKit characteristic。"""
-        is_sensor = self._is_sensor()
-        interval = self.SENSOR_POLL_INTERVAL if is_sensor else self.CONTROL_POLL_INTERVAL
-
+        """传感器轮询：先等一个间隔再读取。"""
         while True:
             try:
-                if not is_sensor:
-                    # 控制类设备：首次立即读取，之后定期同步外部状态变化
-                    await self._poll_update()
-                    await asyncio.sleep(interval)
-                else:
-                    # 传感器：先等一个间隔
-                    await asyncio.sleep(interval)
-                    await self._poll_update()
+                await asyncio.sleep(self.SENSOR_POLL_INTERVAL)
+                await self._poll_update()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 _LOGGER.warning("轮询 %s 异常: %s", self._dev.name, e)
-                await asyncio.sleep(interval)
+                await asyncio.sleep(self.SENSOR_POLL_INTERVAL)
+
+    async def _fallback_poll_loop(self):
+        """控制类设备低频 fallback 轮询（LAN 回调为主）。"""
+        while True:
+            try:
+                await asyncio.sleep(self.CONTROL_POLL_INTERVAL)
+                await self._do_fetch_initial()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                _LOGGER.warning("fallback 轮询 %s 异常: %s", self._dev.name, e)
+                await asyncio.sleep(self.CONTROL_POLL_INTERVAL)
 
     async def _poll_update(self):
         """轮询读取设备属性并更新 HomeKit characteristic。"""
