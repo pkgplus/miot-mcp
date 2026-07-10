@@ -135,8 +135,7 @@ async def get_device(device_name: str) -> dict:
         "name": dev.name,
         "model": dev.model,
         "online": dev.online,
-        "lan_status": dev.lan_status,
-        "local_ip": dev.local_ip,
+        "lan_online": getattr(dev, "lan_online", None),
         "spec": spec,
         "raw": dev.model_dump() if hasattr(dev, "model_dump") else {},
     }

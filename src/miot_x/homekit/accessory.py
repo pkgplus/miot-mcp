@@ -98,6 +98,8 @@ class MiotAccessory(Accessory):
 
         # 传感器轮询任务
         self._poll_task: Optional[asyncio.Task] = None
+        # 初始状态读取任务
+        self._init_task: Optional[asyncio.Task] = None
 
     # ── 主服务构建 ──────────────────────────────────
 
@@ -460,6 +462,73 @@ class MiotAccessory(Accessory):
         if self._poll_task:
             return
         self._poll_task = asyncio.create_task(self._poll_loop())
+
+    async def fetch_initial_state(self):
+        """启动时读取设备初始状态（非传感器设备）。"""
+        if self._is_sensor():
+            return
+        if self._init_task:
+            return
+        self._init_task = asyncio.create_task(self._do_fetch_initial())
+
+    async def _do_fetch_initial(self):
+        """读取设备当前状态并更新 HomeKit characteristic。"""
+        try:
+            await asyncio.sleep(2)  # 等服务完全启动
+            svc = self._primary_service
+
+            # 读取主开关状态
+            on_siid = self._map.on_siid
+            on_piid = self._map.on_piid
+            if on_siid and on_piid:
+                try:
+                    raw = await self._proxy.get_prop(self._dev.did, siid=on_siid, piid=on_piid)
+                    if raw is not None:
+                        value = bool(raw) if not isinstance(raw, bool) else raw
+                        char = svc.get_characteristic("On") or svc.get_characteristic("Active")
+                        if char:
+                            char.set_value(value, should_notify=False)
+                            _LOGGER.debug("初始状态 %s: on=%s", self._dev.name, value)
+                except Exception as e:
+                    _LOGGER.debug("读取 %s 初始开关状态失败: %s", self._dev.name, e)
+
+            # 读取亮度
+            if self._map.brightness_siid and self._map.brightness_piid:
+                try:
+                    raw = await self._proxy.get_prop(self._dev.did, siid=self._map.brightness_siid, piid=self._map.brightness_piid)
+                    if raw is not None:
+                        char = svc.get_characteristic("Brightness")
+                        if char:
+                            char.set_value(int(raw), should_notify=False)
+                except Exception:
+                    pass
+
+            # 读取色温
+            if self._map.color_temp_siid and self._map.color_temp_piid:
+                try:
+                    raw = await self._proxy.get_prop(self._dev.did, siid=self._map.color_temp_siid, piid=self._map.color_temp_piid)
+                    if raw is not None:
+                        char = svc.get_characteristic("ColorTemperature")
+                        if char:
+                            char.set_value(int(raw), should_notify=False)
+                except Exception:
+                    pass
+
+            # 读取风扇速度
+            if self._map.speed_siid and self._map.speed_piid:
+                try:
+                    raw = await self._proxy.get_prop(self._dev.did, siid=self._map.speed_siid, piid=self._map.speed_piid)
+                    if raw is not None:
+                        char = svc.get_characteristic("RotationSpeed")
+                        if char:
+                            char.set_value(int(raw), should_notify=False)
+                except Exception:
+                    pass
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            _LOGGER.debug("初始状态读取 %s 异常: %s", self._dev.name, e)
 
     async def stop_polling(self):
         """停止轮询。"""
