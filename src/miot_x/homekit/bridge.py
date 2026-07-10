@@ -109,6 +109,11 @@ class MiotHomeKitBridge:
         # 检查是否已配对
         self._check_pairing()
 
+        # 记录启动前的 config_version（用于阻止不必要的重新配对）
+        _old_config_version = None
+        if self._paired and self._driver.state.config_version:
+            _old_config_version = self._driver.state.config_version
+
         # 生成 QR 码（未配对时）
         if not self._paired:
             self._generate_qr()
@@ -116,6 +121,18 @@ class MiotHomeKitBridge:
         # 启动 HAP driver
         try:
             await self._driver.async_start()
+
+            # 已有配对时，阻止 accessories_hash 变化导致 config_version 递增
+            # 这会避免 iOS 要求重新配对
+            if self._paired and _old_config_version is not None:
+                if self._driver.state.config_version != _old_config_version:
+                    _LOGGER.info(
+                        "accessories_hash 变化但配对已存在，"
+                        "恢复 config_version %d → %d（避免重新配对）",
+                        self._driver.state.config_version, _old_config_version
+                    )
+                    self._driver.state.config_version = _old_config_version
+                    self._driver.async_persist()
         except Exception as e:
             _LOGGER.error("HomeKit 启动失败: %s", e, exc_info=True)
             raise

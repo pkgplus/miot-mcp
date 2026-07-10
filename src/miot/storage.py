@@ -4,18 +4,17 @@
 """
 MIoT storage and certificate management.
 """
-import os
+
 import asyncio
+import hashlib
 import json
+import logging
+import os
 import shutil
 import traceback
-import hashlib
 from enum import Enum, auto
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
-import logging
-
-# pylint: disable=relative-beyond-top-level
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,8 +30,8 @@ class MIoTStorageType(Enum):
 
 
 class MIoTStorage:
-    """File management.
-    """
+    """File management."""
+
     _main_loop: asyncio.AbstractEventLoop
     _file_future: Dict[str, Tuple[MIoTStorageType, asyncio.Future]]
 
@@ -90,9 +89,9 @@ class MIoTStorage:
                         return None
                 else:
                     data_bytes = r_data
-                if type_ == bytes:
+                if type_ is bytes:
                     return data_bytes
-                if type_ == str:
+                if type_ is str:
                     return str(data_bytes, "utf-8")
                 if type_ in [Dict, List, dict, list]:
                     return json.loads(data_bytes)
@@ -102,14 +101,22 @@ class MIoTStorage:
             _LOGGER.error("load error, %s, %s", e, traceback.format_exc())
             return None
 
-    def load(self, domain: str, name: str, type_: type = bytes) -> Union[bytes, str, Dict, List, None]:
+    def load(
+        self, domain: str, name: str, type_: type = bytes
+    ) -> Union[bytes, str, Dict, List, None]:
         """Load data from file."""
-        full_path = self.__get_full_path(domain=domain, name=name, suffix=type_.__name__)
+        full_path = self.__get_full_path(
+            domain=domain, name=name, suffix=type_.__name__
+        )
         return self.__load(full_path=full_path, type_=type_)
 
-    async def load_async(self, domain: str, name: str, type_: type = bytes) -> Union[bytes, str, Dict, List, None]:
+    async def load_async(
+        self, domain: str, name: str, type_: type = bytes
+    ) -> Union[bytes, str, Dict, List, None]:
         """Async load data from file."""
-        full_path = self.__get_full_path(domain=domain, name=name, suffix=type_.__name__)
+        full_path = self.__get_full_path(
+            domain=domain, name=name, suffix=type_.__name__
+        )
         if full_path in self._file_future:
             # Waiting for the last task to be completed
             op_type, fut = self._file_future[full_path]
@@ -124,7 +131,11 @@ class MIoTStorage:
         return await fut
 
     def __save(
-        self, full_path: str, data: Union[bytes, str, Dict, List, None], cover: bool = True, with_hash: bool = True
+        self,
+        full_path: str,
+        data: Union[bytes, str, Dict, List, None],
+        cover: bool = True,
+        with_hash: bool = True,
     ) -> bool:
         if data is None:
             _LOGGER.error("save error, save data is None")
@@ -147,7 +158,9 @@ class MIoTStorage:
             elif isinstance(data, (Dict, List, dict, list)):
                 w_bytes = json.dumps(data).encode("utf-8")
             else:
-                _LOGGER.error("save error, unsupported data type, %s", type(data).__name__)
+                _LOGGER.error(
+                    "save error, unsupported data type, %s", type(data).__name__
+                )
                 return False
             with open(full_path, "wb") as w_file:
                 w_file.write(w_bytes)
@@ -158,14 +171,22 @@ class MIoTStorage:
             _LOGGER.error("save error, %s, %s", e, traceback.format_exc())
             return False
 
-    def save(self, domain: str, name: str, data: Union[bytes, str, Dict, List, None]) -> bool:
+    def save(
+        self, domain: str, name: str, data: Union[bytes, str, Dict, List, None]
+    ) -> bool:
         """Save data to file."""
-        full_path = self.__get_full_path(domain=domain, name=name, suffix=type(data).__name__)
+        full_path = self.__get_full_path(
+            domain=domain, name=name, suffix=type(data).__name__
+        )
         return self.__save(full_path=full_path, data=data)
 
-    async def save_async(self, domain: str, name: str, data: Union[bytes, str, Dict, List, None]) -> bool:
+    async def save_async(
+        self, domain: str, name: str, data: Union[bytes, str, Dict, List, None]
+    ) -> bool:
         """Async save data to file."""
-        full_path = self.__get_full_path(domain=domain, name=name, suffix=type(data).__name__)
+        full_path = self.__get_full_path(
+            domain=domain, name=name, suffix=type(data).__name__
+        )
         if full_path in self._file_future:
             # Waiting for the last task to be completed
             fut = self._file_future[full_path][1]
@@ -183,12 +204,16 @@ class MIoTStorage:
 
     def remove(self, domain: str, name: str, type_: type) -> bool:
         """Remove file."""
-        full_path = self.__get_full_path(domain=domain, name=name, suffix=type_.__name__)
+        full_path = self.__get_full_path(
+            domain=domain, name=name, suffix=type_.__name__
+        )
         return self.__remove(full_path=full_path)
 
     async def remove_async(self, domain: str, name: str, type_: type) -> bool:
         """Async remove file."""
-        full_path = self.__get_full_path(domain=domain, name=name, suffix=type_.__name__)
+        full_path = self.__get_full_path(
+            domain=domain, name=name, suffix=type_.__name__
+        )
         if full_path in self._file_future:
             # Waiting for the last task to be completed
             op_type, fut = self._file_future[full_path]
@@ -255,9 +280,11 @@ class MIoTStorage:
             _LOGGER.error("save file error, file must be bytes")
             return False
         full_path = os.path.join(self._root_path, domain, name_with_suffix)
-        return self.__save(full_path=full_path, data=data,  with_hash=False)
+        return self.__save(full_path=full_path, data=data, with_hash=False)
 
-    async def save_file_async(self, domain: str, name_with_suffix: str, data: bytes) -> bool:
+    async def save_file_async(
+        self, domain: str, name_with_suffix: str, data: bytes
+    ) -> bool:
         """Async save file."""
         if not isinstance(data, bytes):
             _LOGGER.error("save file error, file must be bytes")
@@ -267,7 +294,9 @@ class MIoTStorage:
             # Waiting for the last task to be completed
             fut = self._file_future[full_path][1]
             await fut
-        fut = self._main_loop.run_in_executor(None, self.__save, full_path, data, True, False)
+        fut = self._main_loop.run_in_executor(
+            None, self.__save, full_path, data, True, False
+        )
         if not fut.done():
             self.__add_file_future(full_path, MIoTStorageType.SAVE_FILE, fut)
         return await fut
@@ -277,7 +306,9 @@ class MIoTStorage:
         full_path = os.path.join(self._root_path, domain, name_with_suffix)
         return self.__load(full_path=full_path, type_=bytes, with_hash_check=False)  # type: ignore
 
-    async def load_file_async(self, domain: str, name_with_suffix: str) -> Optional[bytes]:
+    async def load_file_async(
+        self, domain: str, name_with_suffix: str
+    ) -> Optional[bytes]:
         """Async load file."""
         full_path = os.path.join(self._root_path, domain, name_with_suffix)
         if full_path in self._file_future:
@@ -288,7 +319,9 @@ class MIoTStorage:
                     return await fut
             else:
                 await fut
-        fut = self._main_loop.run_in_executor(None, self.__load, full_path, bytes, False)
+        fut = self._main_loop.run_in_executor(
+            None, self.__load, full_path, bytes, False
+        )
         if not fut.done():
             self.__add_file_future(full_path, MIoTStorageType.LOAD_FILE, fut)
         return await fut  # type: ignore
@@ -339,7 +372,9 @@ class MIoTStorage:
             self.__add_file_future(self._root_path, MIoTStorageType.CLEAR, fut)
         return await fut
 
-    def gen_storage_path(self, domain: Optional[str] = None, name_with_suffix: Optional[str] = None) -> str:
+    def gen_storage_path(
+        self, domain: Optional[str] = None, name_with_suffix: Optional[str] = None
+    ) -> str:
         """Generate file path."""
         result = self._root_path
         if domain:

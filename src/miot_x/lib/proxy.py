@@ -54,11 +54,23 @@ class MiotProxy:
         )
         await self._client.init_async()
 
-        # 检查 token 有效性
+        # 检查 token 有效性并获取 user_info（mips_cloud 需要 uid）
         token_ok = await self._client.check_token_async()
         if not token_ok:
             _LOGGER.info("token 过期，尝试刷新...")
             await self._refresh_token()
+        else:
+            # check_token_async 只验证 token 有效性，
+            # 但不会把 user_info 存到 _oauth_info。
+            # V2 mips_cloud 需要 uid，这里显式调用获取并启动 mips_cloud。
+            try:
+                await self._client.get_user_info_async()
+                # init_async 时因 oauth_info 无 user_info 跳过了 mips_cloud，
+                # 现在有了 uid，手动触发
+                await self._client._setup_mips_async()
+                _LOGGER.info("mips_cloud 已启动（MQTT 实时推送）")
+            except Exception as e:
+                _LOGGER.warning("获取 user_info / 启动 mips_cloud 失败: %s", e)
 
         # 启动 token 自动刷新
         self._refresh_task = asyncio.create_task(self._auto_refresh_loop())

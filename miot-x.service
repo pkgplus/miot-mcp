@@ -6,9 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pi5
-WorkingDirectory=/home/pi5/src/miot-skill
-EnvironmentFile=/home/pi5/src/miot-skill/.env
-ExecStart=/usr/bin/python3 -m miot_x serve --xiaozhi --homekit --http-port 8300 --http-host 0.0.0.0
+WorkingDirectory=/home/pi5/src/miot-x
+EnvironmentFile=/home/pi5/src/miot-x/.env
+ExecStart=/home/pi5/src/miot-x/venv/bin/python -m miot_x serve --xiaozhi --homekit --http-port 8300 --http-host 0.0.0.0
 Restart=always
 RestartSec=10
 StandardOutput=journal

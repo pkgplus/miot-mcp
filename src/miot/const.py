@@ -4,8 +4,8 @@
 """
 Constants.
 """
-from typing import List
 
+from typing import List
 
 NICK_NAME_DEFAULT: str = "Xiaomi"
 PROJECT_CODE: str = "mico"
@@ -33,14 +33,24 @@ OAUTH2_API_HOST_DEFAULT: str = f"{PROJECT_CODE}.api.mijia.tech"
 # Registered in Xiaomi OAuth 2.0 Service
 # DO NOT CHANGE UNLESS YOU HAVE AN ADMINISTRATOR PERMISSION
 OAUTH2_REDIRECT_URI_LIST: List[str] = [
-    "https://127.0.0.1",                                        # localhost
-    f"https://{PROJECT_CODE}.api.mijia.tech/login_redirect",    # Xiaomi official
+    "https://127.0.0.1",  # localhost
+    f"https://{PROJECT_CODE}.api.mijia.tech/login_redirect",  # Xiaomi official
 ]
 
 # seconds, 30 days
-SPEC_STD_LIB_EFFECTIVE_TIME = 3600*24*30
+SPEC_STD_LIB_EFFECTIVE_TIME = 3600 * 24 * 30
 # seconds, 30 days
-MANUFACTURER_EFFECTIVE_TIME = 3600*24*30
+MANUFACTURER_EFFECTIVE_TIME = 3600 * 24 * 30
+
+# MIoT MQTT cloud broker (mips_cloud).
+# Broker hostname = f"{cloud_server}-{MIHOME_MQTT_BROKER_HOST_SUFFIX}"
+# e.g. "cn-ha.mqtt.io.mi.com".
+MIHOME_MQTT_BROKER_HOST_SUFFIX: str = "ha.mqtt.io.mi.com"
+MIHOME_MQTT_PORT: int = 8883
+MIHOME_MQTT_KEEPALIVE: int = 60
+MIHOME_MQTT_SUBSCRIBE_TIMEOUT: float = 10.0
+MIHOME_MQTT_RECONNECT_MIN_SEC: float = 1.0
+MIHOME_MQTT_RECONNECT_MAX_SEC: float = 120.0
 
 # Camera reconnect interval, seconds
 CAMERA_RECONNECT_TIME_MIN: int = 3
@@ -53,7 +63,7 @@ CLOUD_SERVERS: dict = {
     "i2": "India",
     "ru": "Russia",
     "sg": "Singapore",
-    "us": "United States"
+    "us": "United States",
 }
 
 SYSTEM_LANGUAGE_DEFAULT: str = "zh-Hans"
@@ -66,5 +76,5 @@ SYSTEM_LANGUAGES = {
     "ja": "日本語",
     "ru": "Русский",
     "zh-Hans": "简体中文",
-    "zh-Hant": "繁體中文"
+    "zh-Hant": "繁體中文",
 }
