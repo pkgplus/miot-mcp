@@ -149,22 +149,20 @@ async def login():
   请粘贴到下方：
 """)
         callback_url = input("  📋 回调 URL: ").strip()
-        code_match = re.search(r'[?&]code=([^&]+)', callback_url)
-        code = code_match.group(1) if code_match else None
+
+        # 支持官方回调页面返回的 base64 编码授权码
+        import base64
+        import json as _json
+        try:
+            decoded = _json.loads(base64.b64decode(callback_url).decode("utf-8"))
+            code = decoded.get("code")
+        except Exception:
+            code_match = re.search(r'[?&]code=([^&]+)', callback_url)
+            code = code_match.group(1) if code_match else None
 
     if not code:
         print("\n  ❌ 未获取到授权码，请重试")
         return
-
-    # 支持官方回调页面返回的 base64 编码授权码
-    import base64
-    import json as _json
-    if not code.startswith("AKSRV") and not code.startswith("code="):
-        try:
-            decoded = _json.loads(base64.b64decode(code).decode("utf-8"))
-            code = decoded.get("code", code)
-        except Exception:
-            pass
 
     try:
         await auth.exchange_code(code)
