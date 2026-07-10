@@ -46,6 +46,8 @@ class MiotAccessory(Accessory):
 
     # 传感器默认轮询间隔（秒）
     SENSOR_POLL_INTERVAL = 30
+    # 控制类设备轮询间隔（秒）— 较低频率，仅用于同步外部状态变化
+    CONTROL_POLL_INTERVAL = 60
 
     def __init__(
         self,
@@ -456,9 +458,7 @@ class MiotAccessory(Accessory):
     # ── 轮询 ────────────────────────────────────────
 
     async def start_polling(self):
-        """启动传感器轮询（仅传感器类型）。"""
-        if not self._is_sensor():
-            return
+        """启动轮询（传感器 + 控制类设备）。"""
         if self._poll_task:
             return
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -467,14 +467,12 @@ class MiotAccessory(Accessory):
         """启动时读取设备初始状态（非传感器设备）。"""
         if self._is_sensor():
             return
-        if self._init_task:
-            return
-        self._init_task = asyncio.create_task(self._do_fetch_initial())
+        # 启动控制类设备轮询（首次立即读取，之后定期同步）
+        await self.start_polling()
 
     async def _do_fetch_initial(self):
         """读取设备当前状态并更新 HomeKit characteristic。"""
         try:
-            await asyncio.sleep(2)  # 等服务完全启动
             svc = self._primary_service
 
             # 读取主开关状态
@@ -537,18 +535,33 @@ class MiotAccessory(Accessory):
             self._poll_task = None
 
     async def _poll_loop(self):
-        """定期读取传感器值并更新 HomeKit characteristic。"""
+        """定期读取设备值并更新 HomeKit characteristic。"""
+        is_sensor = self._is_sensor()
+        interval = self.SENSOR_POLL_INTERVAL if is_sensor else self.CONTROL_POLL_INTERVAL
+
         while True:
             try:
-                await asyncio.sleep(self.SENSOR_POLL_INTERVAL)
-                await self._poll_update()
+                if not is_sensor:
+                    # 控制类设备：首次立即读取，之后定期同步外部状态变化
+                    await self._poll_update()
+                    await asyncio.sleep(interval)
+                else:
+                    # 传感器：先等一个间隔
+                    await asyncio.sleep(interval)
+                    await self._poll_update()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 _LOGGER.warning("轮询 %s 异常: %s", self._dev.name, e)
+                await asyncio.sleep(interval)
 
     async def _poll_update(self):
         """轮询读取设备属性并更新 HomeKit characteristic。"""
+        # 控制类设备：读取开关/亮度/色温等状态
+        if not self._is_sensor():
+            await self._do_fetch_initial()
+            return
+
         svc = self._primary_service
 
         # 读取主服务属性
