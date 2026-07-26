@@ -13,7 +13,8 @@
 - 🌐 **小智内置桥接** — `--xiaozhi` 参数直接启用，无需额外进程，断线自动重连
 - 🤖 **Agent Skill** — 内置 MCP 和 CLI 两种 Skill，AI 开箱即用
 - 🐍 **全异步** — aiohttp 驱动，无同步阻塞，ARM64 / x64 通吃
-- ⚡ **单进程架构** — HTTP MCP + 小智桥接 + HomeKit 合为一体，不再需要 mcp_pipe 子进程
+- ⚡ **单进程架构** — HTTP MCP + 小智桥接 + HomeKit + 可选巴法/Zengge 桥接合为一体，不再需要额外桥接服务
+- 🐟 **DIY 鱼缸灯** — 巴法 MQTT 接入小爱，BlueZ 缓存失效时自动真实扫描并恢复连接
 
 ## 快速开始
 
@@ -71,6 +72,24 @@ python -m miot_x --xiaozhi
 | `--xiaozhi` | 小智 WebSocket 桥接 | 小智平台远程控制 |
 | `--homekit` | HomeKit 桥接（端口 51828） | Apple 家庭 App / Siri 控制 |
 | `--http-port PORT --xiaozhi --homekit` | **一体化模式（推荐）** | **单进程同时服务全部** |
+
+## 巴法 / Zengge 鱼缸灯桥接（可选）
+
+`serve` 模式检测到 `BEMFA_UID` 后自动启用，无需独立 systemd 服务。依赖已构建的 `zengge-cli`，配置写入 miot-x 的 `.env`：
+
+```dotenv
+BEMFA_UID=<巴法私钥>
+BEMFA_TOPIC=<主题名002>
+BEMFA_HOST=bemfa.com
+BEMFA_PORT=9501
+ZENGGE_CLI_PATH=/path/to/zengge-cli
+ZENGGE_MESH_NAME=<mesh name>
+ZENGGE_MESH_PASS=<mesh password>
+ZENGGE_MESH_LTK=<16-byte LTK>
+ZENGGE_DEVICE_MAC=<device MAC>
+```
+
+支持 `on`、`off` 和 `on#30`。遇到 `le-connection-abort-by-local` 时会重启 BlueZ，保持一次真实扫描会话确认目标 MAC 的新广告，然后带退避重试；不会对协议或凭据错误重启蓝牙。运行 miot-x 的用户需有免密执行 `systemctl restart bluetooth.service` 的权限。
 
 ## MCP 工具
 

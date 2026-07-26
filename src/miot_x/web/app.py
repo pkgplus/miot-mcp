@@ -105,6 +105,17 @@ def create_app(enable_xiaozhi: bool = False, enable_mcp: bool = True, enable_hom
         except Exception as e:
             _LOGGER.warning("MIoT 连接失败（将以离线模式运行）: %s", e)
 
+        # 启动巴法 → Zengge 鱼缸灯桥接（配置 BEMFA_UID 后自动启用）
+        bemfa_bridge = None
+        try:
+            from ..integrations.bemfa_zengge import BemfaZenggeBridge
+            bemfa_bridge = BemfaZenggeBridge.from_env()
+            if bemfa_bridge is not None:
+                await bemfa_bridge.start()
+        except Exception as e:
+            bemfa_bridge = None
+            _LOGGER.error("巴法鱼缸灯桥接启动失败: %s", e)
+
         # 启动小智桥接
         xiaozhi_task = None
         if enable_xiaozhi:
@@ -137,6 +148,8 @@ def create_app(enable_xiaozhi: bool = False, enable_mcp: bool = True, enable_hom
             await homekit_bridge.stop()
         if xiaozhi_task:
             xiaozhi_task.cancel()
+        if bemfa_bridge:
+            await bemfa_bridge.stop()
         await stop_persistent_callback_server()
 
     # API routes
