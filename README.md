@@ -89,7 +89,9 @@ ZENGGE_MESH_LTK=<16-byte LTK>
 ZENGGE_DEVICE_MAC=<device MAC>
 ```
 
-支持 `on`、`off` 和 `on#30`。遇到 `le-connection-abort-by-local` 时会重启 BlueZ，保持一次真实扫描会话确认目标 MAC 的新广告，然后带退避重试；不会对协议或凭据错误重启蓝牙。运行 miot-x 的用户需有免密执行 `systemctl restart bluetooth.service` 的权限。
+支持 `on`、`off` 和 `on#30`。遇到 `le-connection-abort-by-local` 时会重启 BlueZ，保持一次真实扫描会话确认目标 MAC 的新广告，然后带退避重试；不会对协议或凭据错误重启蓝牙。运行 miot-x 的用户需有免密执行 `systemctl restart bluetooth.service` 的权限。Mesh 凭据通过子进程环境传递，不出现在命令行参数或日志中。
+
+> 巴法在当前实测环境中只有明文 MQTT `9501` 能稳定下发控制，TLS `9503` 虽能连接但收不到消息。因此 UID 在传输层缺少保护；不要在不可信网络中部署，并应在巴法恢复 TLS 下发后优先切回 TLS。
 
 ## MCP 工具
 

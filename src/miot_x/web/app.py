@@ -96,61 +96,79 @@ def create_app(enable_xiaozhi: bool = False, enable_mcp: bool = True, enable_hom
         from .oauth_callback import start_persistent_callback_server, stop_persistent_callback_server
         await start_persistent_callback_server()
 
-        # 尝试预连接 MIoT
         proxy = None
-        try:
-            from ..lib.proxy import get_shared_proxy
-            proxy = await get_shared_proxy()
-            _LOGGER.info("MIoT 已连接")
-        except Exception as e:
-            _LOGGER.warning("MIoT 连接失败（将以离线模式运行）: %s", e)
-
-        # 启动巴法 → Zengge 鱼缸灯桥接（配置 BEMFA_UID 后自动启用）
         bemfa_bridge = None
-        try:
-            from ..integrations.bemfa_zengge import BemfaZenggeBridge
-            bemfa_bridge = BemfaZenggeBridge.from_env()
-            if bemfa_bridge is not None:
-                await bemfa_bridge.start()
-        except Exception as e:
-            bemfa_bridge = None
-            _LOGGER.error("巴法鱼缸灯桥接启动失败: %s", e)
-
-        # 启动小智桥接
         xiaozhi_task = None
-        if enable_xiaozhi:
-            xiaozhi_task = asyncio.create_task(_xiaozhi_with_status(mcp_instance))
-            _LOGGER.info("小智桥接已启动")
-
-        # 启动 HomeKit 桥接
         homekit_bridge = None
-        if enable_homekit and proxy is not None:
+        try:
+            # 尝试预连接 MIoT
             try:
-                from ..homekit import MiotHomeKitBridge
-                homekit_bridge = MiotHomeKitBridge(proxy)
-                await homekit_bridge.start()
-                set_homekit_bridge(homekit_bridge)
-                _LOGGER.info("HomeKit 桥接已启动")
+                from ..lib.proxy import get_shared_proxy
+                proxy = await get_shared_proxy()
+                _LOGGER.info("MIoT 已连接")
             except Exception as e:
-                _LOGGER.error("HomeKit 桥接启动失败: %s", e)
-        elif enable_homekit:
-            _LOGGER.warning("HomeKit 桥接需要 MIoT 连接，跳过")
+                _LOGGER.warning("MIoT 连接失败（将以离线模式运行）: %s", e)
 
-        # 嵌套 MCP app 的 lifespan
-        if enable_mcp and mcp_app is not None:
-            async with mcp_app.lifespan(mcp_app):
+            # 启动巴法 → Zengge 鱼缸灯桥接（配置 BEMFA_UID 后自动启用）
+            try:
+                from ..integrations.bemfa_zengge import BemfaZenggeBridge
+                bemfa_bridge = BemfaZenggeBridge.from_env()
+                if bemfa_bridge is not None:
+                    await bemfa_bridge.start()
+            except Exception as e:
+                if bemfa_bridge is not None:
+                    await bemfa_bridge.stop()
+                bemfa_bridge = None
+                _LOGGER.error("巴法鱼缸灯桥接启动失败: %s", e)
+
+            # 启动小智桥接
+            if enable_xiaozhi:
+                xiaozhi_task = asyncio.create_task(_xiaozhi_with_status(mcp_instance))
+                _LOGGER.info("小智桥接已启动")
+
+            # 启动 HomeKit 桥接
+            if enable_homekit and proxy is not None:
+                try:
+                    from ..homekit import MiotHomeKitBridge
+                    homekit_bridge = MiotHomeKitBridge(proxy)
+                    await homekit_bridge.start()
+                    set_homekit_bridge(homekit_bridge)
+                    _LOGGER.info("HomeKit 桥接已启动")
+                except Exception as e:
+                    _LOGGER.error("HomeKit 桥接启动失败: %s", e)
+            elif enable_homekit:
+                _LOGGER.warning("HomeKit 桥接需要 MIoT 连接，跳过")
+
+            # 嵌套 MCP app 的 lifespan
+            if enable_mcp and mcp_app is not None:
+                async with mcp_app.lifespan(mcp_app):
+                    yield
+            else:
                 yield
-        else:
-            yield
-
-        # 清理
-        if homekit_bridge:
-            await homekit_bridge.stop()
-        if xiaozhi_task:
-            xiaozhi_task.cancel()
-        if bemfa_bridge:
-            await bemfa_bridge.stop()
-        await stop_persistent_callback_server()
+        finally:
+            if homekit_bridge:
+                try:
+                    await homekit_bridge.stop()
+                except Exception as e:
+                    _LOGGER.error("HomeKit 桥接停止失败: %s", e)
+            set_homekit_bridge(None)
+            if xiaozhi_task:
+                xiaozhi_task.cancel()
+                try:
+                    await xiaozhi_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    _LOGGER.error("小智桥接停止失败: %s", e)
+            if bemfa_bridge:
+                try:
+                    await bemfa_bridge.stop()
+                except Exception as e:
+                    _LOGGER.error("巴法鱼缸灯桥接停止失败: %s", e)
+            try:
+                await stop_persistent_callback_server()
+            except Exception as e:
+                _LOGGER.error("OAuth 回调服务停止失败: %s", e)
 
     # API routes
     api_routes = [
