@@ -73,7 +73,9 @@ class ThirdPartyWebRouteTests(unittest.IsolatedAsyncioTestCase):
         self.proxy.get_homes.return_value = {}
 
     @staticmethod
-    def request(path, *, method="GET", path_params=None, body=None):
+    def request(
+        path, *, method="GET", path_params=None, body=None, query_string=b""
+    ):
         sent = False
 
         async def receive():
@@ -87,7 +89,7 @@ class ThirdPartyWebRouteTests(unittest.IsolatedAsyncioTestCase):
             "type": "http",
             "method": method,
             "path": path,
-            "query_string": b"",
+            "query_string": query_string,
             "headers": [(b"content-type", b"application/json")],
             "path_params": path_params or {},
         }, receive)
@@ -102,6 +104,17 @@ class ThirdPartyWebRouteTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["devices"][0]["source"], "third_party")
+
+    async def test_room_filter_excludes_other_third_party_rooms(self):
+        request = self.request(
+            "/api/devices", query_string="room=客厅".encode()
+        )
+        with patch.object(device_routes, "third_party_registry", self.registry), patch.object(
+            device_routes, "_get_proxy_or_error", AsyncMock(return_value=(self.proxy, None))
+        ):
+            response = await device_routes.list_devices(request)
+
+        self.assertEqual(json.loads(response.body)["devices"], [])
 
     async def test_power_route_dispatches_to_third_party_provider(self):
         did = "third-party:fake:lamp"
@@ -155,6 +168,20 @@ class ThirdPartyWebTemplateTests(unittest.TestCase):
             Path(__file__).parents[1] / "src/miot_x/web/static/app.js"
         ).read_text()
         self.assertIn("dev.source === 'third_party' && dev.power == null", script)
+
+    def test_frontend_control_updates_power_and_rolls_back_on_failure(self):
+        script = (
+            Path(__file__).parents[1] / "src/miot_x/web/static/app.js"
+        ).read_text()
+        self.assertIn("dev.power = nextPower", script)
+        self.assertIn("if (!response.ok) throw new Error", script)
+        self.assertIn("dev.power = oldPower", script)
+
+    def test_platform_subtitle_keeps_online_status(self):
+        html = (
+            Path(__file__).parents[1] / "src/miot_x/web/static/index.html"
+        ).read_text()
+        self.assertIn("dev.platform + ' · '", html)
 
 
 if __name__ == "__main__":

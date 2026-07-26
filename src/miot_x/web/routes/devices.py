@@ -19,6 +19,12 @@ async def list_devices(request: Request):
     room = request.query_params.get("room", "")
     refresh = request.query_params.get("refresh", "").lower() == "true"
     third_party_devices = await third_party_registry.list_devices()
+    if room:
+        third_party_devices = [
+            device
+            for device in third_party_devices
+            if room in device.get("room", "")
+        ]
     proxy, err = await _get_proxy_or_error()
     if err:
         if third_party_devices:
