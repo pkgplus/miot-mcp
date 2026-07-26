@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from miot_x.integrations.bemfa_zengge import (
     BemfaCommand,
@@ -61,6 +61,33 @@ class BemfaBridgeTests(unittest.IsolatedAsyncioTestCase):
         await bridge.apply(BemfaCommand(power=True, brightness=30))
 
         controller.execute.assert_awaited_once_with(power=True, brightness=30)
+
+    async def test_exposes_web_device_and_controls_power_and_brightness(self):
+        bridge, controller = self.make_bridge()
+
+        devices = await bridge.list_web_devices()
+        self.assertEqual(devices[0]["did"], bridge.web_device_id)
+        self.assertEqual(devices[0]["source"], "third_party")
+        self.assertEqual(devices[0]["platform"], "巴法云")
+        self.assertIsNone(devices[0]["power"])
+
+        await bridge.set_web_power(bridge.web_device_id, True)
+        await bridge.set_web_prop(bridge.web_device_id, 2, 2, 35)
+
+        self.assertEqual(
+            controller.execute.await_args_list,
+            [
+                call(power=True, brightness=None),
+                call(power=True, brightness=35),
+            ],
+        )
+        self.assertTrue(await bridge.get_web_prop(bridge.web_device_id, 2, 1))
+        self.assertEqual(await bridge.get_web_prop(bridge.web_device_id, 2, 2), 35)
+
+        with self.assertRaises(ValueError):
+            await bridge.set_web_prop(bridge.web_device_id, 2, 1, "false")
+        with self.assertRaises(ValueError):
+            await bridge.set_web_prop(bridge.web_device_id, 2, 2, True)
 
     async def test_recovers_bluez_and_retries_controller(self):
         controller = SimpleNamespace(

@@ -176,7 +176,7 @@
                             <div class="row-icon" :class="deviceColor(dev)" x-html="deviceIcon(dev)"></div>
                             <div class="row-info">
                                 <div class="row-name" x-text="dev.name"></div>
-                                <div class="row-sub" x-text="(dev.room || '未分配') + ' · ' + (dev.online ? '在线' : '离线')"></div>
+                                <div class="row-sub" x-text="(dev.room || '未分配') + ' · ' + (dev.platform || (dev.online ? '在线' : '离线'))"></div>
                             </div>
                             <div class="row-action" x-show="isToggleable(dev)" @click.stop="quickToggle(dev)">
                                 <div class="mini-toggle" :class="dev._on && 'on'"></div>
@@ -602,7 +602,7 @@
                     </div>
 
                     <!-- SPEC-based controls -->
-                    <template x-if="currentDevice?.spec">
+                    <template x-if="currentDevice?.spec && currentDevice?.source !== 'third_party'">
                         <div>
                             <template x-for="service in currentDevice.spec.services" :key="service.iid">
                                 <div class="control-section" x-show="service.properties.filter(p=>p.access&&(p.access.includes('write')||p.access.includes('read'))).length > 0">

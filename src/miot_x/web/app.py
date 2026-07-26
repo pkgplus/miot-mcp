@@ -115,6 +115,8 @@ def create_app(enable_xiaozhi: bool = False, enable_mcp: bool = True, enable_hom
                 bemfa_bridge = BemfaZenggeBridge.from_env()
                 if bemfa_bridge is not None:
                     await bemfa_bridge.start()
+                    from ..integrations.third_party import third_party_registry
+                    third_party_registry.register(bemfa_bridge)
             except Exception as e:
                 if bemfa_bridge is not None:
                     await bemfa_bridge.stop()
@@ -162,6 +164,8 @@ def create_app(enable_xiaozhi: bool = False, enable_mcp: bool = True, enable_hom
                     _LOGGER.error("小智桥接停止失败: %s", e)
             if bemfa_bridge:
                 try:
+                    from ..integrations.third_party import third_party_registry
+                    third_party_registry.unregister(bemfa_bridge.provider_id)
                     await bemfa_bridge.stop()
                 except Exception as e:
                     _LOGGER.error("巴法鱼缸灯桥接停止失败: %s", e)

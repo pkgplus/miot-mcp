@@ -4,6 +4,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from ...integrations.third_party import third_party_registry
 from ...lib.proxy import get_shared_proxy
 
 
@@ -17,8 +18,11 @@ async def _get_proxy_or_error():
 async def list_devices(request: Request):
     room = request.query_params.get("room", "")
     refresh = request.query_params.get("refresh", "").lower() == "true"
+    third_party_devices = await third_party_registry.list_devices()
     proxy, err = await _get_proxy_or_error()
     if err:
+        if third_party_devices:
+            return JSONResponse({"total": len(third_party_devices), "devices": third_party_devices})
         return err
 
     devices = await proxy.get_devices()
@@ -42,11 +46,15 @@ async def list_devices(request: Request):
             "online": dev.online, "room": dev_room,
         })
 
+    result.extend(third_party_devices)
     return JSONResponse({"total": len(result), "devices": result})
 
 
 async def get_device(request: Request):
     did = request.path_params["did"]
+    third_party_device = await third_party_registry.get_device(did)
+    if third_party_device is not None:
+        return JSONResponse(third_party_device)
     proxy, err = await _get_proxy_or_error()
     if err:
         return err
@@ -115,6 +123,9 @@ async def get_device(request: Request):
 
 async def device_on(request: Request):
     did = request.path_params["did"]
+    if await third_party_registry.has_device(did):
+        result = await third_party_registry.set_power(did, True)
+        return JSONResponse({"did": did, "action": "on", "result": result})
     proxy, err = await _get_proxy_or_error()
     if err:
         return err
@@ -128,6 +139,9 @@ async def device_on(request: Request):
 
 async def device_off(request: Request):
     did = request.path_params["did"]
+    if await third_party_registry.has_device(did):
+        result = await third_party_registry.set_power(did, False)
+        return JSONResponse({"did": did, "action": "off", "result": result})
     proxy, err = await _get_proxy_or_error()
     if err:
         return err
@@ -142,6 +156,12 @@ async def device_prop(request: Request):
     did = request.path_params["did"]
     body = await request.json()
     siid, piid, value = body["siid"], body["piid"], body["value"]
+    if await third_party_registry.has_device(did):
+        try:
+            result = await third_party_registry.set_prop(did, siid, piid, value)
+        except (KeyError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"did": did, "siid": siid, "piid": piid, "value": value, "result": result})
     proxy, err = await _get_proxy_or_error()
     if err:
         return err
@@ -165,6 +185,12 @@ async def get_prop_value(request: Request):
     did = request.path_params["did"]
     siid = int(request.path_params["siid"])
     piid = int(request.path_params["piid"])
+    if await third_party_registry.has_device(did):
+        try:
+            value = await third_party_registry.get_prop(did, siid, piid)
+            return JSONResponse({"did": did, "siid": siid, "piid": piid, "value": value})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
     proxy, err = await _get_proxy_or_error()
     if err:
         return err

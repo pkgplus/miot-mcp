@@ -144,7 +144,7 @@ function app() {
             }
         },
         async loadDevices() {
-            try { const r = await fetch('/api/devices'); if (!r.ok) return; const d = await r.json(); this.devices = (d.devices || []).map(dev => ({ ...dev, _on: false })); } catch {}
+            try { const r = await fetch('/api/devices'); if (!r.ok) return; const d = await r.json(); this.devices = (d.devices || []).map(dev => ({ ...dev, _on: dev.power === true })); } catch {}
         },
         async loadScenes() { try { const r = await fetch('/api/scenes'); if (!r.ok) return; const d = await r.json(); this.scenes = d.scenes || []; } catch {} },
         async loadHomes() {
@@ -160,7 +160,7 @@ function app() {
         async openDevice(dev, push) {
             if (push !== false) this.pushURL('/device/' + dev.did);
             this.currentDevice = { ...dev, spec: null }; this.propValues = {};
-            try { const r = await fetch(`/api/devices/${dev.did}`); if (!r.ok) return; const d = await r.json(); this.currentDevice = d; await this.loadPropValues(); } catch {}
+            try { const r = await fetch(`/api/devices/${dev.did}`); if (!r.ok) return; const d = await r.json(); this.currentDevice = { ...d, _on: d.power === true }; await this.loadPropValues(); } catch {}
         },
         async loadPropValues() {
             if (!this.currentDevice?.spec) return;
@@ -186,6 +186,8 @@ function app() {
         },
         async setPropValue(siid, piid, value) {
             const k = `${siid}-${piid}`; this.propValues[k] = value;
+            if (siid === 2 && piid === 1 && this.currentDevice) this.currentDevice._on = Boolean(value);
+            if (siid === 2 && piid === 2 && this.currentDevice) this.currentDevice._on = true;
             try { await fetch(`/api/devices/${this.currentDevice.did}/prop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siid, piid, value }) }); } catch {}
         },
         async quickToggle(dev) {
@@ -270,6 +272,7 @@ function app() {
         deviceStatus(dev) {
             if (!dev) return '';
             if (!dev.online) return '离线';
+            if (dev.source === 'third_party' && dev.power == null) return '状态未知';
             const type = this.getDeviceType(dev);
             if (type === 'sensor') return '监测中';
             if (type === 'camera') return '在线';

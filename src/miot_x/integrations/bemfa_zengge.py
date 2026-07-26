@@ -65,6 +65,7 @@ class BemfaZenggeBridge:
         controller: ZenggeController,
         broker: str = "bemfa.com",
         port: int = 9501,
+        device_name: str = "鱼缸灯",
         secrets: tuple[str, ...] = (),
     ) -> None:
         self.uid = uid
@@ -72,7 +73,13 @@ class BemfaZenggeBridge:
         self.broker = broker
         self.port = port
         self.controller = controller
+        self.device_name = device_name
+        self.provider_id = "bemfa-zengge"
+        self.web_device_id = "third-party:bemfa-zengge:aquarium-light"
         self._secrets = secrets
+        self._power: bool | None = None
+        self._brightness: int | None = None
+        self._apply_lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=16)
         self._worker_task: asyncio.Task | None = None
@@ -112,6 +119,7 @@ class BemfaZenggeBridge:
             topic=os.getenv("BEMFA_TOPIC", "NG7LCB84e002").strip(),
             broker=os.getenv("BEMFA_HOST", "bemfa.com").strip(),
             port=int(os.getenv("BEMFA_PORT", "9501")),
+            device_name=os.getenv("ZENGGE_DEVICE_NAME", "鱼缸灯").strip() or "鱼缸灯",
             controller=controller,
             secrets=(mesh_name, mesh_password, mesh_ltk),
         )
@@ -229,6 +237,13 @@ class BemfaZenggeBridge:
                 self._pending_slots.release()
 
     async def apply(self, command: BemfaCommand) -> None:
+        async with self._apply_lock:
+            await self._apply_locked(command)
+            self._power = command.power
+            if command.brightness is not None:
+                self._brightness = command.brightness
+
+    async def _apply_locked(self, command: BemfaCommand) -> None:
         for attempt in range(4):
             try:
                 await self.controller.execute(
@@ -254,6 +269,95 @@ class BemfaZenggeBridge:
                         attempt + 1,
                     )
                     await self._wait_before_retry(delay)
+
+    async def list_web_devices(self) -> list[dict]:
+        return [self._web_device(include_spec=False)]
+
+    async def get_web_device(self, did: str) -> dict | None:
+        if did != self.web_device_id:
+            return None
+        return self._web_device(include_spec=True)
+
+    def _web_device(self, *, include_spec: bool) -> dict:
+        device = {
+            "did": self.web_device_id,
+            "name": self.device_name,
+            "model": "zengge.mesh-light",
+            "online": self._worker_task is not None and not self._worker_task.done(),
+            "room": "第三方设备",
+            "source": "third_party",
+            "platform": "巴法云",
+            "power": self._power,
+        }
+        if include_spec:
+            device["spec"] = {
+                "urn": "third-party:bemfa:zengge-light",
+                "name": "Zengge BLE Mesh Light",
+                "services": [{
+                    "iid": 2,
+                    "name": "灯光",
+                    "properties": [
+                        {
+                            "iid": 1,
+                            "name": "开关",
+                            "format": "bool",
+                            "access": ["read", "write"],
+                            "range": None,
+                            "value_list": None,
+                            "unit": None,
+                        },
+                        {
+                            "iid": 2,
+                            "name": "亮度",
+                            "format": "uint8",
+                            "access": ["read", "write"],
+                            "range": [1, 100, 1],
+                            "value_list": None,
+                            "unit": "percentage",
+                        },
+                    ],
+                    "actions": [],
+                }],
+            }
+            device["sub_devices"] = {}
+        return device
+
+    def _check_web_device(self, did: str) -> None:
+        if did != self.web_device_id:
+            raise KeyError(did)
+
+    async def set_web_power(self, did: str, power: bool) -> dict:
+        self._check_web_device(did)
+        if not isinstance(power, bool):
+            raise ValueError("power must be a boolean")
+        command = BemfaCommand(power=power)
+        await self.apply(command)
+        self._publish_state("on" if power else "off")
+        return {"success": True}
+
+    async def get_web_prop(self, did: str, siid: int, piid: int):
+        self._check_web_device(did)
+        if (siid, piid) == (2, 1):
+            return self._power
+        if (siid, piid) == (2, 2):
+            return self._brightness
+        raise KeyError((siid, piid))
+
+    async def set_web_prop(self, did: str, siid: int, piid: int, value) -> dict:
+        self._check_web_device(did)
+        if (siid, piid) == (2, 1):
+            if not isinstance(value, bool):
+                raise ValueError("power must be a boolean")
+            return await self.set_web_power(did, value)
+        if (siid, piid) == (2, 2):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("brightness must be an integer")
+            if not 1 <= value <= 100:
+                raise ValueError("brightness must be between 1 and 100")
+            await self.apply(BemfaCommand(power=True, brightness=value))
+            self._publish_state(f"on#{value}")
+            return {"success": True}
+        raise KeyError((siid, piid))
 
     async def _refresh_with_retry(self) -> None:
         last_error: Exception | None = None
