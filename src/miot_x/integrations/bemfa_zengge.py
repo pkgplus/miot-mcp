@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bemfa MQTT to Zengge BLE Mesh bridge managed by miot-x."""
+"""Bemfa MQTT to native Python Zengge BLE Mesh bridge."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 
 import paho.mqtt.client as mqtt
+
+from .zengge.controller import ZenggeController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,30 +55,24 @@ def redact_secrets(text: str, *secrets: str) -> str:
 
 
 class BemfaZenggeBridge:
-    """Receive Bemfa commands and execute them through zengge-cli."""
+    """Receive Bemfa commands and execute them through an in-process controller."""
 
     def __init__(
         self,
         *,
         uid: str,
         topic: str,
-        cli_path: str,
+        controller: ZenggeController,
         broker: str = "bemfa.com",
         port: int = 9501,
-        mesh_name: str = "",
-        mesh_pass: str = "",
-        mesh_ltk: str = "",
-        device_mac: str = "08:65:F0:79:A3:C2",
+        secrets: tuple[str, ...] = (),
     ) -> None:
         self.uid = uid
         self.topic = topic
-        self.cli_path = cli_path
         self.broker = broker
         self.port = port
-        self.mesh_name = mesh_name
-        self.mesh_pass = mesh_pass
-        self.mesh_ltk = mesh_ltk
-        self.device_mac = device_mac
+        self.controller = controller
+        self._secrets = secrets
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=16)
         self._worker_task: asyncio.Task | None = None
@@ -90,25 +85,40 @@ class BemfaZenggeBridge:
         uid = os.getenv("BEMFA_UID", "").strip()
         if not uid:
             return None
+        mesh_name = os.getenv("ZENGGE_MESH_NAME", "").strip()
+        mesh_password = os.getenv("ZENGGE_MESH_PASS", "").strip()
+        mesh_ltk = os.getenv("ZENGGE_MESH_LTK", "").strip()
+        device_mac = os.getenv("ZENGGE_DEVICE_MAC", "").strip()
+        required = {
+            "ZENGGE_MESH_NAME": mesh_name,
+            "ZENGGE_MESH_PASS": mesh_password,
+            "ZENGGE_MESH_LTK": mesh_ltk,
+            "ZENGGE_DEVICE_MAC": device_mac,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError("missing Zengge configuration: " + ", ".join(missing))
+        controller = ZenggeController(
+            mesh_name=mesh_name,
+            mesh_password=mesh_password,
+            mesh_ltk=mesh_ltk,
+            device_mac=device_mac,
+            mesh_address=int(os.getenv("ZENGGE_MESH_ADDRESS", "1"), 0),
+            control_type=int(os.getenv("ZENGGE_CONTROL_TYPE", "0x0F"), 0),
+            idle_timeout=float(os.getenv("ZENGGE_IDLE_TIMEOUT", "60")),
+        )
         return cls(
             uid=uid,
             topic=os.getenv("BEMFA_TOPIC", "NG7LCB84e002").strip(),
-            cli_path=os.getenv(
-                "ZENGGE_CLI_PATH", "/home/pi5/src/zengge-sdk/zengge-cli"
-            ).strip(),
             broker=os.getenv("BEMFA_HOST", "bemfa.com").strip(),
             port=int(os.getenv("BEMFA_PORT", "9501")),
-            mesh_name=os.getenv("ZENGGE_MESH_NAME", "").strip(),
-            mesh_pass=os.getenv("ZENGGE_MESH_PASS", "").strip(),
-            mesh_ltk=os.getenv("ZENGGE_MESH_LTK", "").strip(),
-            device_mac=os.getenv("ZENGGE_DEVICE_MAC", "08:65:F0:79:A3:C2").strip(),
+            controller=controller,
+            secrets=(mesh_name, mesh_password, mesh_ltk),
         )
 
     async def start(self) -> None:
         if self._client is not None or self._worker_task is not None:
             return
-        if not Path(self.cli_path).is_file():
-            raise FileNotFoundError(f"zengge-cli not found: {self.cli_path}")
         self._loop = asyncio.get_running_loop()
         try:
             client = mqtt.Client(
@@ -129,7 +139,9 @@ class BemfaZenggeBridge:
         except Exception:
             await self.stop()
             raise
-        _LOGGER.info("巴法鱼缸灯桥接已启动: %s:%d/%s", self.broker, self.port, self.topic)
+        _LOGGER.info(
+            "巴法鱼缸灯桥接已启动: %s:%d/%s", self.broker, self.port, self.topic
+        )
 
     async def stop(self) -> None:
         self._loop = None
@@ -158,6 +170,7 @@ class BemfaZenggeBridge:
                 break
             self._queue.task_done()
             self._pending_slots.release()
+        await self.controller.stop()
         await self._terminate_process()
 
     def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
@@ -209,35 +222,28 @@ class BemfaZenggeBridge:
                 self._publish_state(payload.strip())
                 _LOGGER.info("鱼缸灯命令已执行: %s", payload.strip())
             except Exception as exc:
-                _LOGGER.error("鱼缸灯命令执行失败 %r: %s", payload, exc)
+                message = redact_secrets(str(exc), *self._secrets)
+                _LOGGER.error("鱼缸灯命令执行失败 %r: %s", payload, message)
             finally:
                 self._queue.task_done()
                 self._pending_slots.release()
 
     async def apply(self, command: BemfaCommand) -> None:
-        operations: list[tuple[str, int | None]] = [
-            ("on" if command.power else "off", None)
-        ]
-        if command.brightness is not None:
-            operations.append(("bright", command.brightness))
-
-        for name, brightness in operations:
-            await self._execute_with_recovery(name, brightness)
-
-    async def _execute_with_recovery(
-        self, command: str, brightness: int | None
-    ) -> None:
         for attempt in range(4):
             try:
-                await self._run_cli(command, brightness)
+                await self.controller.execute(
+                    power=command.power, brightness=command.brightness
+                )
                 return
-            except RuntimeError as exc:
+            except Exception as exc:
                 if not is_recoverable_bluetooth_error(str(exc)) or attempt == 3:
                     raise
                 if attempt == 0:
                     _LOGGER.warning(
-                        "检测到 BlueZ 连接中断，重置蓝牙后重试: %s", exc
+                        "检测到 BlueZ 连接中断，重置蓝牙后重试: %s",
+                        redact_secrets(str(exc), *self._secrets),
                     )
+                    await self.controller.disconnect()
                     await self._restart_bluetooth()
                     await self._refresh_with_retry()
                 else:
@@ -250,54 +256,39 @@ class BemfaZenggeBridge:
                     await self._wait_before_retry(delay)
 
     async def _refresh_with_retry(self) -> None:
-        last_error: RuntimeError | None = None
+        last_error: Exception | None = None
         for attempt in range(3):
             try:
-                await self._refresh_bluez_device()
-                return
-            except RuntimeError as exc:
+                if await self.controller.refresh_device():
+                    return
+            except Exception as exc:
                 last_error = exc
-                if attempt < 2:
-                    await self._wait_before_retry(2 ** (attempt + 1))
-        assert last_error is not None
-        raise last_error
+            if attempt < 2:
+                await self._wait_before_retry(2 ** (attempt + 1))
+        if last_error is not None:
+            raise RuntimeError("fresh BLE scan failed after retries") from last_error
+        raise RuntimeError("fresh BLE advertisement not found")
 
     async def _wait_before_retry(self, delay: int) -> None:
         await asyncio.sleep(delay)
 
-    async def _run_cli(self, command: str, brightness: int | None = None) -> None:
-        args = [self.cli_path, "-scan", "-timeout", "30s", "-cmd", command]
-        if self.device_mac:
-            args.extend(["-mac", self.device_mac])
-        if brightness is not None:
-            args.extend(["-bright", str(brightness)])
-        env = os.environ.copy()
-        env.update(
-            {
-                "ZENGGE_MESH_NAME": self.mesh_name,
-                "ZENGGE_MESH_PASS": self.mesh_pass,
-                "ZENGGE_MESH_LTK": self.mesh_ltk,
-            }
-        )
-        returncode, output = await self._run_process(args, env=env)
-        text = redact_secrets(
-            output.strip(), self.mesh_name, self.mesh_pass, self.mesh_ltk
-        )
-        if returncode != 0:
-            raise RuntimeError(text or f"zengge-cli exited {returncode}")
-
     async def _run_process(
-        self, args: list[str], *, env: dict[str, str] | None = None
+        self, args: list[str], *, timeout: float = 15
     ) -> tuple[int, str]:
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=env,
         )
         self._process = process
         try:
-            output, _ = await process.communicate()
+            try:
+                output, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                await self._terminate_process(process)
+                raise RuntimeError("system process timed out") from None
             return process.returncode or 0, output.decode("utf-8", errors="replace")
         except asyncio.CancelledError:
             await self._terminate_process(process)
@@ -333,16 +324,6 @@ class BemfaZenggeBridge:
         if returncode != 0:
             raise RuntimeError("restart bluetooth failed: " + output.strip())
         await asyncio.sleep(2)
-
-    async def _refresh_bluez_device(self) -> None:
-        """Hold an active discovery session until BlueZ sees a fresh advertisement."""
-        returncode, output = await self._run_process(
-            ["bluetoothctl", "--timeout", "10", "scan", "on"]
-        )
-        if returncode != 0 or self.device_mac.lower() not in output.lower():
-            raise RuntimeError(
-                f"fresh BLE advertisement not found for {self.device_mac}"
-            )
 
     def _publish_state(self, payload: str) -> None:
         if self._client is not None:

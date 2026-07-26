@@ -24,6 +24,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "HAP-python>=4.0",
     "paho-mqtt>=2.1.0",
+    "bleak>=1.0.1",
+    "cryptography>=43.0",
 ]
 
 [project.scripts]

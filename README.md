@@ -75,21 +75,25 @@ python -m miot_x --xiaozhi
 
 ## 巴法 / Zengge 鱼缸灯桥接（可选）
 
-`serve` 模式检测到 `BEMFA_UID` 后自动启用，无需独立 systemd 服务。依赖已构建的 `zengge-cli`，配置写入 miot-x 的 `.env`：
+`serve` 模式检测到 `BEMFA_UID` 后自动启用，无需独立 systemd 服务，也不依赖外部 CLI。miot-x 内部使用 Python `bleak` 直接连接 BlueZ，配置写入 `.env`：
 
 ```dotenv
 BEMFA_UID=<巴法私钥>
 BEMFA_TOPIC=<主题名002>
 BEMFA_HOST=bemfa.com
 BEMFA_PORT=9501
-ZENGGE_CLI_PATH=/path/to/zengge-cli
 ZENGGE_MESH_NAME=<mesh name>
 ZENGGE_MESH_PASS=<mesh password>
 ZENGGE_MESH_LTK=<16-byte LTK>
 ZENGGE_DEVICE_MAC=<device MAC>
+ZENGGE_MESH_ADDRESS=1
+ZENGGE_CONTROL_TYPE=0x0F
+ZENGGE_IDLE_TIMEOUT=60
 ```
 
-支持 `on`、`off` 和 `on#30`。遇到 `le-connection-abort-by-local` 时会重启 BlueZ，保持一次真实扫描会话确认目标 MAC 的新广告，然后带退避重试；不会对协议或凭据错误重启蓝牙。运行 miot-x 的用户需有免密执行 `systemctl restart bluetooth.service` 的权限。Mesh 凭据通过子进程环境传递，不出现在命令行参数或日志中。
+支持 `on`、`off` 和 `on#30`。控制器首次收到命令时扫描、连接并完成 Mesh 鉴权；命令完成后默认保持 60 秒热连接，后续命令复用同一 BLE 会话，空闲超时才主动断开。`on#30` 在一次连接内连续执行开灯与亮度设置。
+
+遇到明确的 BlueZ 本机连接中断时会断开旧会话、重启 BlueZ、执行真实扫描并带退避重试；不会对协议或凭据错误重启蓝牙。运行 miot-x 的用户需有免密执行 `systemctl restart bluetooth.service` 的权限。Mesh 凭据只存在于进程内存和权限受控的 `.env`，不进入命令行参数或日志。
 
 > 巴法在当前实测环境中只有明文 MQTT `9501` 能稳定下发控制，TLS `9503` 虽能连接但收不到消息。因此 UID 在传输层缺少保护；不要在不可信网络中部署，并应在巴法恢复 TLS 下发后优先切回 TLS。
 
