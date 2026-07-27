@@ -182,6 +182,8 @@ class MiotHomeKitBridge:
                             self._accessories.append(ch_acc)
                             if ch_acc._is_sensor():
                                 await ch_acc.start_polling()
+                            else:
+                                await ch_acc.fetch_initial_state()
                             added += 1
                             _LOGGER.debug("已添加通道: %s → %s", ch_name, mapping.service_name)
                         except Exception as e:
@@ -195,6 +197,8 @@ class MiotHomeKitBridge:
                     self._accessories.append(acc)
                     if acc._is_sensor():
                         await acc.start_polling()
+                    else:
+                        await acc.fetch_initial_state()
                     added += 1
                     _LOGGER.debug("已添加: %s → %s", dev.name, mapping.service_name)
 

@@ -4,6 +4,7 @@
 """
 I18n.
 """
+
 import asyncio
 import logging
 from pathlib import Path
@@ -21,15 +22,18 @@ _LOGGER = logging.getLogger(__name__)
 
 class MIoTI18n:
     """MIoT Internationalization Translation.
-    Translate by LLM, which does not guarantee the accuracy of the 
-    translation. If there is a problem with the translation, please submit 
+    Translate by LLM, which does not guarantee the accuracy of the
+    translation. If there is a problem with the translation, please submit
     the ISSUE feedback. After the review, we will modify it as soon as possible.
     """
+
     _main_loop: asyncio.AbstractEventLoop
     _lang: str
 
     def __init__(
-        self, lang: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None
+        self,
+        lang: Optional[str] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         self._main_loop = loop or asyncio.get_running_loop()
         self._lang = lang or SYSTEM_LANGUAGE_DEFAULT
@@ -50,7 +54,11 @@ class MIoTI18n:
         _LOGGER.info("deinit i18n")
 
     async def translate_async(
-        self, domain: str, key: str, replace: Optional[Dict[str, str]] = None, default: Union[str, Dict, None] = None
+        self,
+        domain: str,
+        key: str,
+        replace: Optional[Dict[str, str]] = None,
+        default: Union[str, Dict, None] = None,
     ) -> Union[str, Dict, None]:
         """Translate."""
         result = await self.__load_async(domain=domain)
@@ -62,7 +70,7 @@ class MIoTI18n:
             result = result[item]
         if isinstance(result, str) and replace:
             for k, v in replace.items():
-                result = result.replace("{{"+k+"}}", str(v))
+                result = result.replace("{{" + k + "}}", str(v))
         return result or default
 
     @cached(ttl=120, cache=Cache.MEMORY)

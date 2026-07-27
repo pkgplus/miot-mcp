@@ -14,6 +14,7 @@
 """
 import asyncio
 import ipaddress
+import os
 import re
 import sys
 
@@ -116,7 +117,24 @@ async def login():
         finally:
             await runner.cleanup()
     else:
-        print(f"""  步骤 1: 在浏览器中打开以下链接
+        redirect_uri_env = os.getenv("MIOT_REDIRECT_URI", "")
+        if redirect_uri_env and "mijia.tech" in redirect_uri_env:
+            print(f"""  步骤 1: 在浏览器中打开以下链接
+  ─────────────────────────────────
+  {auth_url}
+
+  步骤 2: 完成小米账号登录
+  ─────────────────────────────────
+  登录后浏览器会跳转到小米官方授权完成页面，
+  页面会显示「授权成功」并提供一键复制授权码按钮。
+
+  步骤 3: 复制授权码
+  ─────────────────────────────────
+  点击页面上的「复制授权信息」按钮，
+  将授权码粘贴到下方：
+""")
+        else:
+            print(f"""  步骤 1: 在浏览器中打开以下链接
   ─────────────────────────────────
   {auth_url}
 
@@ -131,8 +149,16 @@ async def login():
   请粘贴到下方：
 """)
         callback_url = input("  📋 回调 URL: ").strip()
-        code_match = re.search(r'[?&]code=([^&]+)', callback_url)
-        code = code_match.group(1) if code_match else None
+
+        # 支持官方回调页面返回的 base64 编码授权码
+        import base64
+        import json as _json
+        try:
+            decoded = _json.loads(base64.b64decode(callback_url).decode("utf-8"))
+            code = decoded.get("code")
+        except Exception:
+            code_match = re.search(r'[?&]code=([^&]+)', callback_url)
+            code = code_match.group(1) if code_match else None
 
     if not code:
         print("\n  ❌ 未获取到授权码，请重试")

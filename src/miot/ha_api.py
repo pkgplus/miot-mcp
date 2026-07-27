@@ -4,27 +4,22 @@
 """
 Home Assistant Rest API client.
 """
-# pylint: disable=too-many-arguments, too-many-positional-arguments
-# pylint: disable=too-many-instance-attributes
+
 import asyncio
-from datetime import datetime
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional
+
 import aiohttp
 
-from .types import HAAutomationInfo, HAStateInfo
-
 from .oauth2 import BaseOAuth2Client
+from .types import HAAutomationInfo, HAStateInfo
 
 _LOGGER = logging.getLogger(__name__)
 
 HA_HTTP_API_TIMEOUT: int = 30
 
-SUPPORT_ENTITY_CLASSES = {
-    "light": {
-        "name": "Light"
-    }
-}
+SUPPORT_ENTITY_CLASSES = {"light": {"name": "Light"}}
 
 
 class HAOAuth2Client(BaseOAuth2Client):
@@ -44,12 +39,9 @@ class HAOAuth2Client(BaseOAuth2Client):
 
         http_res = await self._session.post(
             url=f"{self._base_url}/auth/revoke",
-            data={
-                "token": refresh_token,
-                "action": "revoke"
-            },
+            data={"token": refresh_token, "action": "revoke"},
             headers={"content-type": "application/x-www-form-urlencoded"},
-            timeout=self._AUTH_API_TIMEOUT
+            timeout=self._AUTH_API_TIMEOUT,
         )
         if http_res.status != 200:
             raise ValueError(f"revoke token failed, {http_res.status}")
@@ -64,6 +56,7 @@ class HAHttpClient:
     404 (Not Found)
     405 (Method Not Allowed)
     """
+
     _main_loop: asyncio.AbstractEventLoop
     _session: aiohttp.ClientSession
     _base_url: str
@@ -72,8 +65,10 @@ class HAHttpClient:
     _states_buffer: Dict[str, HAStateInfo]
 
     def __init__(
-        self, base_url: str, access_token: str,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        self,
+        base_url: str,
+        access_token: str,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         """Initialize."""
         self._main_loop = loop or asyncio.get_running_loop()
@@ -92,8 +87,7 @@ class HAHttpClient:
             await self._session.close()
 
     async def __api_get_async(
-        self, url_path: str, params: Dict,
-        timeout: int = HA_HTTP_API_TIMEOUT
+        self, url_path: str, params: Dict, timeout: int = HA_HTTP_API_TIMEOUT
     ) -> Dict:
         """Get data from ha api with http get."""
         http_res = await self._session.get(
@@ -101,18 +95,20 @@ class HAHttpClient:
             params=params,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._token}"
+                "Authorization": f"Bearer {self._token}",
             },
-            timeout=aiohttp.ClientTimeout(total=timeout))
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        )
         if http_res.status == 401:
             raise TypeError("ha api get failed, unauthorized(401)")
         if http_res.status not in [200, 201]:
-            raise TypeError(f"ha api get failed, {http_res.status}, {url_path}, {params}")
+            raise TypeError(
+                f"ha api get failed, {http_res.status}, {url_path}, {params}"
+            )
         return await http_res.json()
 
     async def __api_post_async(
-        self, url_path: str, data: Dict,
-        timeout: int = HA_HTTP_API_TIMEOUT
+        self, url_path: str, data: Dict, timeout: int = HA_HTTP_API_TIMEOUT
     ) -> Dict:
         """Get data from ha api with http post."""
         http_res = await self._session.post(
@@ -120,13 +116,16 @@ class HAHttpClient:
             json=data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._token}"
+                "Authorization": f"Bearer {self._token}",
             },
-            timeout=aiohttp.ClientTimeout(total=timeout))
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        )
         if http_res.status == 401:
             raise TypeError("ha api get failed, unauthorized(401)")
         if http_res.status not in [200, 201]:
-            raise TypeError(f"ha api post failed, {http_res.status}, {url_path}, {data}")
+            raise TypeError(
+                f"ha api post failed, {http_res.status}, {url_path}, {data}"
+            )
         return await http_res.json()
 
     async def update_info_async(self, token: str) -> None:
@@ -137,28 +136,30 @@ class HAHttpClient:
 
     async def check_token_async(self) -> bool:
         """Check the token."""
-        return await HAHttpClient.validate_async(url=self._base_url, token=self._token, loop=self._main_loop)
+        return await HAHttpClient.validate_async(
+            url=self._base_url, token=self._token, loop=self._main_loop
+        )
 
     @staticmethod
     async def validate_async(
-        url: str,
-        token: str,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        url: str, token: str, loop: Optional[asyncio.AbstractEventLoop] = None
     ) -> bool:
         """Validate the token."""
         if not isinstance(url, str) or url.strip() == "":
             raise ValueError("invalid url")
         if not isinstance(token, str) or token.strip() == "":
             raise ValueError("invalid token")
-        async with aiohttp.ClientSession(loop=loop or asyncio.get_running_loop()) as session:
+        async with aiohttp.ClientSession(
+            loop=loop or asyncio.get_running_loop()
+        ) as session:
             http_res = await session.get(
                 url=f"{url}/api/",
                 params={},
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}"
+                    "Authorization": f"Bearer {token}",
                 },
-                timeout=10
+                timeout=10,
             )
             if http_res.status == 401:
                 raise TypeError("ha api get failed, unauthorized(401)")
@@ -183,8 +184,7 @@ class HAHttpClient:
             else:
                 return self._states_buffer
         res_obj = await self.__api_get_async(
-            url_path="/api/states" + (f"/{entity_id}" if entity_id else ""),
-            params={}
+            url_path="/api/states" + (f"/{entity_id}" if entity_id else ""), params={}
         )
         if entity_id:
             if not isinstance(res_obj, Dict):
@@ -212,7 +212,7 @@ class HAHttpClient:
                 last_reported=state.get("last_reported", 0),
                 last_updated=state.get("last_updated", 0),
                 attributes=state.get("attributes", {}),
-                context=state.get("context", {})
+                context=state.get("context", {}),
             )
 
         return states
@@ -222,16 +222,15 @@ class HAHttpClient:
         if not domain or not service or not entity_id:
             raise ValueError("invalid params")
         res_obj = await self.__api_post_async(
-            url_path=f"/api/services/{domain}/{service}",
-            data={
-                "entity_id": entity_id
-            }
+            url_path=f"/api/services/{domain}/{service}", data={"entity_id": entity_id}
         )
         if not isinstance(res_obj, List):
             raise TypeError(f"invalid response, {res_obj}")
         return True
 
-    async def get_automations_async(self, force_update: bool = True) -> Dict[str, HAAutomationInfo]:
+    async def get_automations_async(
+        self, force_update: bool = True
+    ) -> Dict[str, HAAutomationInfo]:
         """Get all automations."""
         res_obj = await self.get_states_async(force_update=force_update)
         automations: Dict[str, HAAutomationInfo] = {}
@@ -242,22 +241,27 @@ class HAHttpClient:
             last_triggered_ts = 0
             if last_triggered:
                 try:
-                    last_triggered_ts = int(datetime.fromisoformat(
-                        last_triggered).timestamp()*1000)
-                except Exception:  # pylint: disable=broad-except
+                    last_triggered_ts = int(
+                        datetime.fromisoformat(last_triggered).timestamp() * 1000
+                    )
+                except Exception:
                     pass
             automations[e_id] = HAAutomationInfo(
                 **item.model_dump(),
                 last_triggered=last_triggered_ts,
                 attr_id=item.attributes.get("id", ""),
-                attr_mode=item.attributes.get("mode", "")
+                attr_mode=item.attributes.get("mode", ""),
             )
         return automations
 
-    async def trigger_automation_async(self, automation: str | HAAutomationInfo) -> bool:
+    async def trigger_automation_async(
+        self, automation: str | HAAutomationInfo
+    ) -> bool:
         """Trigger automation."""
         return await self.call_service(
             domain="automation",
             service="trigger",
-            entity_id=automation if isinstance(automation, str) else automation.entity_id
+            entity_id=automation
+            if isinstance(automation, str)
+            else automation.entity_id,
         )

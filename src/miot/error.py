@@ -4,12 +4,14 @@
 """
 MIoT error code and exception.
 """
+
 from enum import Enum
 from typing import Any
 
 
 class MIoTErrorCode(Enum):
     """MIoT error code."""
+
     # Base error code
     CODE_UNKNOWN = -10000
     CODE_UNAVAILABLE = -10001
@@ -36,11 +38,12 @@ class MIoTErrorCode(Enum):
 
 class MIoTError(Exception):
     """MIoT error."""
+
     code: MIoTErrorCode
     message: Any
 
     def __init__(
-        self,  message: Any, code: MIoTErrorCode = MIoTErrorCode.CODE_UNKNOWN
+        self, message: Any, code: MIoTErrorCode = MIoTErrorCode.CODE_UNKNOWN
     ) -> None:
         self.message = message
         self.code = code
@@ -48,53 +51,45 @@ class MIoTError(Exception):
 
     def to_json_str(self) -> str:
         """To str."""
-        return f"{{\"code\":{self.code.value},\"message\":\"{self.message}\"}}"
+        return f'{{"code":{self.code.value},"message":"{self.message}"}}'
 
     def to_dict(self) -> dict:
         """To dict."""
         return {"code": self.code.value, "message": self.message}
 
 
-class MIoTOAuth2Error(MIoTError):
-    ...
+class MIoTOAuth2Error(MIoTError): ...
 
 
-class MIoTHttpError(MIoTError):
-    ...
+class MIoTHttpError(MIoTError): ...
 
 
-class MIoTMipsError(MIoTError):
-    ...
+class MIoTMipsError(MIoTError): ...
 
 
-class MIoTDeviceError(MIoTError):
-    ...
+class MIoTDeviceError(MIoTError): ...
 
 
-class MIoTCameraError(MIoTError):
-    ...
+class MIoTCameraError(MIoTError): ...
 
 
 class MIoTSpecError(MIoTError):
-    def __init__(self, message: Any, code: MIoTErrorCode = MIoTErrorCode.CODE_SPEC_DEFAULT) -> None:
+    def __init__(
+        self, message: Any, code: MIoTErrorCode = MIoTErrorCode.CODE_SPEC_DEFAULT
+    ) -> None:
         super().__init__(message, code)
 
 
-class MIoTStorageError(MIoTError):
-    ...
+class MIoTStorageError(MIoTError): ...
 
 
-class MIoTCertError(MIoTError):
-    ...
+class MIoTCertError(MIoTError): ...
 
 
-class MIoTClientError(MIoTError):
-    ...
+class MIoTClientError(MIoTError): ...
 
 
-class MIoTLanError(MIoTError):
-    ...
+class MIoTLanError(MIoTError): ...
 
 
-class MIoTMediaDecoderError(MIoTError):
-    ...
+class MIoTMediaDecoderError(MIoTError): ...

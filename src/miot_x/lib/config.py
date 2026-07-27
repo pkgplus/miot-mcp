@@ -22,8 +22,11 @@ AUTH_FILE = CACHE_DIR / "auth.json"
 DEVICES_FILE = CACHE_DIR / "devices.json"
 SCENES_FILE = CACHE_DIR / "scenes.json"
 
-# OAuth 回调地址（本地 loopback）
-OAUTH_REDIRECT_URI = "https://127.0.0.1"
+# OAuth 回调地址 — 支持本地 loopback 和小米官方回调页面
+# V2 SDK 新增 mico.api.mijia.tech/login_redirect，授权后显示友好页面
+OAUTH_REDIRECT_URI = os.getenv(
+    "MIOT_REDIRECT_URI", "https://127.0.0.1"
+)
 # 小米云区域（cn = 中国大陆）
 CLOUD_SERVER = os.getenv("MIOT_CLOUD_SERVER", "cn")
 

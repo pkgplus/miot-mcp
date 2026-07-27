@@ -1,10 +1,11 @@
 # miot-x
 
-> 米家智能家居控制工具 — 内置小米官方 [miot_kit](https://github.com/XiaoMi/xiaomi-miloco) SDK，零外部 SDK 依赖，开箱即用。提供 MCP Server、CLI 命令、HomeKit 桥接、Agent Skill 及小智 WebSocket 桥接，**单进程搞定全部**，纯 Python，ARM64 可用，零 GPU 依赖。
+> 米家智能家居控制工具 — 内置小米官方 [miot_kit](https://github.com/XiaoMi/xiaomi-miloco) SDK (Miloco 2.0)，零外部 SDK 依赖，开箱即用。提供 MCP Server、CLI 命令、HomeKit 桥接、Agent Skill 及小智 WebSocket 桥接，**单进程搞定全部**，纯 Python，ARM64 可用，零 GPU 依赖。
 
 ## 特性
 
-- 🏠 **官方 SDK 直连** — 基于小米官方 miot_kit，复用 OAuth + AES 加密协议，稳定可靠
+- 🏠 **官方 SDK 直连** — 基于小米官方 miot_kit (Miloco 2.0)，复用 OAuth + AES 加密协议，稳定可靠
+- ⚡ **MQTT 实时推送** — 通过 mips_cloud MQTT 订阅设备上下线、绑定/解绑事件，无需轮询
 - 📱 **终端扫码登录** — 运行即显示二维码，手机米家一扫授权，token 自动刷新
 - 🔧 **多种接入方式** — 默认 stdio、`--http-port` HTTP MCP、`--xiaozhi` WebSocket 桥接，可任意组合
 - 🍎 **HomeKit 桥接** — 米家设备一键导入 Apple 家庭 App，Siri 语音控制，控制中心遥控器
@@ -23,7 +24,7 @@ git clone https://github.com/pkgplus/miot-x.git
 cd miot-x
 python3 -m venv venv && source venv/bin/activate
 pip install -e .
-# 内置 miot_kit SDK (基于 XiaoMi/xiaomi-miloco v0.1.15 + bugfix)，无需额外安装
+# 内置 miot_kit SDK (基于 XiaoMi/xiaomi-miloco Miloco 2.0)，无需额外安装
 ```
 
 ### 2. 扫码登录
@@ -32,7 +33,9 @@ pip install -e .
 python -m miot_x login
 ```
 
-终端会显示二维码，用手机米家 App 扫码授权。授权后浏览器会跳转到 `127.0.0.1`（打不开是正常的），把地址栏的完整 URL 粘贴回终端即可。
+在浏览器中打开授权链接完成小米账号登录。默认回调地址为 `https://127.0.0.1`（页面显示"无法连接"是正常的），将地址栏完整 URL 粘贴回终端即可。
+
+也可通过环境变量 `MIOT_REDIRECT_URI=https://mico.api.mijia.tech/login_redirect` 使用小米官方回调页面，授权后显示友好的"授权成功"页面，支持一键复制授权码。
 
 登录成功后会自动提示选择家庭（支持多选或全部）。选择后只会操作对应家庭的设备和场景。随时可通过以下命令重新选择：
 
@@ -246,13 +249,14 @@ systemctl status miot-x.service
                     │   miot_x         │──WS──► 小智平台
   Claude Code ──stdio──►  (单进程)     │
                     │                  │──HTTPS──► 小米 IoT 云
+                    │                  │──MQTT──► 米家 MQTT Broker
          ┌──HAP──►  │                  │──mDNS──► iPhone 家庭 App
          │          └──────────────────┘
          │                │
     HomeKit         ┌─────┼─────┐
     配件映射         ▼     ▼     ▼
                proxy.py  auth.py  miot_kit
-              (设备控制) (OAuth)  (小米SDK)
+              (设备控制) (OAuth)  (小米SDK v2)
 ```
 
 单进程架构：HTTP MCP、小智 WebSocket 桥接、HomeKit 桥接、设备控制全部在同一个进程中运行。
@@ -279,9 +283,10 @@ miot-x/
 │   │   │   └── app.py        #     Starlette 应用（lifespan 启动 HomeKit）
 │   │   └── cli/              #   CLI 命令层
 │   │       └── commands.py   #     所有子命令实现
-│   └── miot/                 # 小米官方 miot_kit SDK (内置)
-│       ├── client.py         #   设备客户端 (含 dict iter bugfix)
+│   └── miot/                 # 小米官方 miot_kit SDK (内置, Miloco 2.0)
+│       ├── client.py         #   设备客户端
 │       ├── cloud.py          #   小米 IoT 云通信
+│       ├── mips_cloud.py     #   MQTT 实时推送 (mips_cloud)
 │       ├── oauth2.py         #   OAuth 2.0 认证
 │       └── ...
 ├── skills/                   # Agent Skills
@@ -293,18 +298,27 @@ miot-x/
 
 ## miot_kit SDK 说明
 
-本项目内置的 `src/miot/` 来源于小米官方 **[miot_kit](https://github.com/XiaoMi/xiaomi-miloco)**（`XiaoMi/xiaomi-miloco` 仓库中的 `miot_kit/miot/` 子目录，v0.1.15）。
+本项目内置的 `src/miot/` 来源于小米官方 **[miot_kit](https://github.com/XiaoMi/xiaomi-miloco)**（`XiaoMi/xiaomi-miloco` 仓库 `backend/miot/` 目录，Miloco 2.0 版本）。
 
-**Bug fix（[PR #262](https://github.com/XiaoMi/xiaomi-miloco/pull/262)）：**
+### V2 升级内容（相对于 v0.1.15）
 
-`client.py:324` — 修复设备从云端移除后 `get_devices_async()` 抛出 `RuntimeError: dictionary changed size during iteration`：
+- **MQTT 实时推送** — 新增 `mips_cloud.py`，通过 MQTT (TLS 8883) 订阅设备属性变化、上下线、绑定/解绑事件，无需轮询 HTTP 接口
+- **fastmcp 3.x** — MCP 协议层升级到 fastmcp 3.4.2
+- **多语言 MCP 描述** — i18n 改为 YAML 格式，新增德语/法语支持
+- **摄像头改进** — G711A/G711U 音频解码、macOS arm64/x86_64 支持、H264 编码器竞态修复
+- **CLI doctor 命令** — 分层探测 + 主动连通性检测
+- **依赖升级** — aiohttp 3.14+、av 17+、pydantic 2.13+、新增 paho-mqtt 2.1+
 
-```diff
-- for did in self._device_buffer.keys():
-+ for did in list(self._device_buffer.keys()):
-```
+### OAuth2 回调地址
 
-该 fix 已向上游提交 PR，合入后将与官方版本完全一致。
+V2 支持两个合法回调地址（小米 OAuth2 服务端注册）：
+
+| 回调地址 | 说明 |
+|----------|------|
+| `https://127.0.0.1` | 本地 loopback（默认），浏览器显示"无法连接"，从地址栏复制 URL |
+| `https://mico.api.mijia.tech/login_redirect` | 小米官方回调页面，显示"授权成功"页面，支持一键复制授权码 |
+
+通过环境变量 `MIOT_REDIRECT_URI` 切换回调地址。
 
 ## License
 

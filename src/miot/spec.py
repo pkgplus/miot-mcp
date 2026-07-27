@@ -4,27 +4,63 @@
 """
 MIoT SPEC.
 """
+
 import asyncio
-from enum import Enum, auto
 import json
-from pathlib import Path
+import logging
 import platform
 import time
+from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Dict, List, Optional
-import logging
+
 from pydantic import BaseModel, ConfigDict, Field
 
-# pylint: disable=relative-beyond-top-level
-from .const import SYSTEM_LANGUAGE_DEFAULT, SPEC_STD_LIB_EFFECTIVE_TIME
 from .common import http_get_json_async, load_yaml_file
-from .storage import MIoTStorage
+from .const import SPEC_STD_LIB_EFFECTIVE_TIME, SYSTEM_LANGUAGE_DEFAULT
 from .error import MIoTSpecError
+from .storage import MIoTStorage
 
 _LOGGER = logging.getLogger(__name__)
+
+# miot-spec.org 设备/服务类型目录刷新会按类型逐个拉取（各数百个）。并发上限避免一次性发出
+# 数百个连接打爆对端 / 耗尽本地连接器——旧实现无上限 gather，弱网下整批一起卡到超时、刷屏。
+_SPEC_FETCH_CONCURRENCY = 16
+
+
+async def _bounded_gather(coros: List, *, return_exceptions: bool = False) -> List:
+    """带并发上限地 gather 一批协程，限流对 miot-spec.org 的批量请求。
+
+    顺序与传入一致（与 asyncio.gather 相同），仅限制同时在飞的请求数。
+    """
+    sem = asyncio.Semaphore(_SPEC_FETCH_CONCURRENCY)
+
+    async def _run(coro):
+        async with sem:
+            return await coro
+
+    return await asyncio.gather(
+        *(_run(c) for c in coros), return_exceptions=return_exceptions
+    )
+
+
+def _urn_type_name(urn: str) -> Optional[str]:
+    """Extract type_name from a MIoT URN.
+
+    URN form: ``urn:miot-spec-v2:{kind}:{type_name}:{type_id}:{vendor}:{ver}``.
+    The type_name is at index 3. Returns None when the URN is malformed.
+    """
+    if not urn:
+        return None
+    parts = urn.split(":")
+    if len(parts) < 4:
+        return None
+    return parts[3] or None
 
 
 class MIoTSpecTypeLevel(int, Enum):
     """MIoT-Spec-V2 type level."""
+
     UNKNOWN = 0
     OPTIONAL = auto()
     REQUIRED = auto()
@@ -33,8 +69,13 @@ class MIoTSpecTypeLevel(int, Enum):
 
 class MIoTSpecValueRange(BaseModel):
     """MIoT SPEC value range class."""
-    min_: float = Field(alias="min", serialization_alias="min", description="Property value min")
-    max_: float = Field(alias="max", serialization_alias="max", description="Property value max")
+
+    min_: float = Field(
+        alias="min", serialization_alias="min", description="Property value min"
+    )
+    max_: float = Field(
+        alias="max", serialization_alias="max", description="Property value max"
+    )
     step: float = Field(description="Property value step")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -45,6 +86,7 @@ class MIoTSpecValueRange(BaseModel):
 
 class MIoTSpecValueListItem(BaseModel):
     """MIoT SPEC value list item class."""
+
     # NOTICE: bool type without name
     name: str = Field(description="Property value name")
     # Value
@@ -60,6 +102,7 @@ class MIoTSpecValueListItem(BaseModel):
 
 class MIoTSpecStdLib(BaseModel):
     """MIoT-Spec-V2 standard library."""
+
     devices: Dict[str, Dict[str, str]] = Field(description="Device list")
     services: Dict[str, Dict[str, str]] = Field(description="Service list")
     properties: Dict[str, Dict[str, str]] = Field(description="Property list")
@@ -70,7 +113,7 @@ class MIoTSpecStdLib(BaseModel):
 
 class _MIoTSpecStdLibClass:
     """MIoT-Spec-V2 standard library class."""
-    # pylint: disable=inconsistent-quotes
+
     _DOMAIN: str = "miot_specs"
     _NAME: str = "spec_std_lib"
     _main_loop: asyncio.AbstractEventLoop
@@ -87,7 +130,7 @@ class _MIoTSpecStdLibClass:
         self,
         storage: MIoTStorage,
         lang: Optional[str] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         self._main_loop = loop or asyncio.get_running_loop()
         self._storage = storage
@@ -103,7 +146,9 @@ class _MIoTSpecStdLibClass:
 
     async def init_async(self) -> None:
         """Init."""
-        std_lib_cache = await self._storage.load_async(domain=self._DOMAIN, name=self._NAME, type_=dict)
+        std_lib_cache = await self._storage.load_async(
+            domain=self._DOMAIN, name=self._NAME, type_=dict
+        )
         if (
             isinstance(std_lib_cache, Dict)
             and "data" in std_lib_cache
@@ -145,14 +190,14 @@ class _MIoTSpecStdLibClass:
         self._values = std_lib["values"]
 
     def __dump(self) -> Dict[str, Dict[str, Dict[str, str]]]:
-        # pylint: disable=unused-private-member
+
         return {
             "devices": self._devices,
             "services": self._services,
             "properties": self._properties,
             "events": self._events,
             "actions": self._actions,
-            "values": self._values
+            "values": self._values,
         }
 
     def device_translate(self, key: str) -> Optional[str]:
@@ -209,11 +254,9 @@ class _MIoTSpecStdLibClass:
         if std_lib_new:
             self.__load(std_lib_new)
             if not await self._storage.save_async(
-                domain=self._DOMAIN, name=self._NAME,
-                data={
-                    "data": std_lib_new,
-                    "ts": int(time.time())
-                }
+                domain=self._DOMAIN,
+                name=self._NAME,
+                data={"data": std_lib_new, "ts": int(time.time())},
             ):
                 _LOGGER.error("save spec std lib failed")
             return True
@@ -242,11 +285,18 @@ class _MIoTSpecStdLibClass:
                 }
                 # Get external std lib, Power by LM
                 tasks.clear()
-                for name in ["device", "service", "property", "event", "action", "property_value"]:
+                for name in [
+                    "device",
+                    "service",
+                    "property",
+                    "event",
+                    "action",
+                    "property_value",
+                ]:
                     tasks.append(
                         http_get_json_async(
                             url=f"https://cdn.cnbj1.fds.api.mi-img.com/res-conf/xiaomi-home/std_ex_{name}.json",
-                            loop=self._main_loop
+                            loop=self._main_loop,
                         )
                     )
                 results = await asyncio.gather(*tasks)
@@ -297,17 +347,17 @@ class _MIoTSpecStdLibClass:
                         else:
                             std_libs["values"][key] = value
                 else:
-                    _LOGGER.error(
-                        "get external std lib failed, values")
+                    _LOGGER.error("get external std lib failed, values")
                 return std_libs
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                _LOGGER.error(
-                    "update spec std lib error, retry, %d, %s", index, err)
+            except Exception as err:
+                _LOGGER.error("update spec std lib error, retry, %d, %s", index, err)
         return None
 
     async def __get_property_value(self) -> Dict:
         reply = await http_get_json_async(
-            url="https://miot-spec.org/miot-spec-v2/normalization/list/property_value", loop=self._main_loop)
+            url="https://miot-spec.org/miot-spec-v2/normalization/list/property_value",
+            loop=self._main_loop,
+        )
         if reply is None or "result" not in reply:
             raise MIoTSpecError("get property value failed")
         result = {}
@@ -322,19 +372,24 @@ class _MIoTSpecStdLibClass:
                 continue
             result[f"{item['urn']}|{item['proName']}|{item['normalization']}"] = {
                 "zh-Hans": item["description"],
-                "en": item["normalization"]
+                "en": item["normalization"],
             }
         return result
 
     async def __get_template_list(self, name: str) -> Dict:
         reply = await http_get_json_async(
             url="https://miot-spec.org/miot-spec-v2/template/list/" + name,
-            loop=self._main_loop)
+            loop=self._main_loop,
+        )
         if reply is None or "result" not in reply:
             raise MIoTSpecError(f"get service failed, {name}")
         result: Dict = {}
         for item in reply["result"]:
-            if not isinstance(item, Dict) or "type" not in item or "description" not in item:
+            if (
+                not isinstance(item, Dict)
+                or "type" not in item
+                or "description" not in item
+            ):
                 continue
             if "zh_cn" in item["description"]:
                 item["description"]["zh-Hans"] = item["description"].pop("zh_cn")
@@ -349,13 +404,18 @@ class _MIoTSpecStdLibClass:
 
 class _MIoTSpecBase(BaseModel):
     """MIoT SPEC base class."""
+
     iid: int = Field(description="MIoT SPEC Instance ID")
     name: str = Field(description="MIoT SPEC name")
-    type_: str = Field(description="MIoT SPEC urn", alias="type", serialization_alias="type")
+    type_: str = Field(
+        description="MIoT SPEC urn", alias="type", serialization_alias="type"
+    )
     description: str = Field(description="MIoT SPEC description")
     description_trans: str = Field(description="MIoT SPEC description translate")
 
-    type_level: MIoTSpecTypeLevel = Field(default=MIoTSpecTypeLevel.UNKNOWN, description="MIoT SPEC type level")
+    type_level: MIoTSpecTypeLevel = Field(
+        default=MIoTSpecTypeLevel.UNKNOWN, description="MIoT SPEC type level"
+    )
     proprietary: bool = Field(default=False, description="MIoT SPEC proprietary")
     need_filter: bool = Field(default=False, description="MIoT SPEC need filter")
 
@@ -364,6 +424,7 @@ class _MIoTSpecBase(BaseModel):
 
 class MIoTSpecProperty(_MIoTSpecBase):
     """MIoT SPEC property class."""
+
     # Spec v2: "bool","uint8","uint16","uint32","uint64","int8","int16","int32","int64","float","string"
     # Spec v3: "uint8","int8","uint16","int16","uint32","int32","uint64","int64","float","string","bool",
     #   "iids","array","struct"
@@ -371,9 +432,17 @@ class MIoTSpecProperty(_MIoTSpecBase):
     access: List[str] = Field(description="Property access")
     unit: Optional[str] = Field(description="MIoT SPEC unit", default=None)
     value_range: Optional[MIoTSpecValueRange] = Field(
-        alias="value-range", serialization_alias="value-range", default=None, description="Property value range")
+        alias="value-range",
+        serialization_alias="value-range",
+        default=None,
+        description="Property value range",
+    )
     value_list: Optional[List[MIoTSpecValueListItem]] = Field(
-        alias="value-list", serialization_alias="value-list", default=None, description="Property value list")
+        alias="value-list",
+        serialization_alias="value-list",
+        default=None,
+        description="Property value list",
+    )
 
     @property
     def readable(self):
@@ -393,26 +462,38 @@ class MIoTSpecProperty(_MIoTSpecBase):
 
 class MIoTSpecEvent(_MIoTSpecBase):
     """MIoT SPEC event class."""
+
     arguments: List[MIoTSpecProperty] = Field(description="Event arguments", default=[])
     # service: "MIoTSpecService"
 
 
 class MIoTSpecAction(_MIoTSpecBase):
     """MIoT SPEC action class."""
-    in_: List[MIoTSpecProperty] = Field(alias="in", serialization_alias="in", default=[], description="Action input")
+
+    in_: List[MIoTSpecProperty] = Field(
+        alias="in", serialization_alias="in", default=[], description="Action input"
+    )
     out: List[MIoTSpecProperty] = Field(default=[], description="Action output")
     # service: "MIoTSpecService"
 
 
 class MIoTSpecService(_MIoTSpecBase):
     """MIoT SPEC service class."""
-    properties: List[MIoTSpecProperty] = Field(default_factory=list, description="Service properties")
-    events: List[MIoTSpecEvent] = Field(default_factory=list, description="Service events")
-    actions: List[MIoTSpecAction] = Field(default_factory=list, description="Service actions")
+
+    properties: List[MIoTSpecProperty] = Field(
+        default_factory=list, description="Service properties"
+    )
+    events: List[MIoTSpecEvent] = Field(
+        default_factory=list, description="Service events"
+    )
+    actions: List[MIoTSpecAction] = Field(
+        default_factory=list, description="Service actions"
+    )
 
 
 class MIoTSpecDevice(BaseModel):
     """MIoT SPEC device class."""
+
     urn: str = Field(description="MIoT SPEC urn")
     name: str = Field(description="MIoT SPEC name")
     # urn_name: str
@@ -423,8 +504,16 @@ class MIoTSpecDevice(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class MIoTSpecLiteActionParam(BaseModel):
+    """Structured action input parameter."""
+
+    name: str = Field(description="Parameter name (URN type_name)")
+    format: str = Field(description="Parameter format")
+
+
 class MIoTSpecDeviceLite(BaseModel):
     """MIoT device spec lite."""
+
     iid: str = Field(description="SPEC Instance ID")
     description: str = Field(description="SPEC name")
     # int
@@ -432,12 +521,37 @@ class MIoTSpecDeviceLite(BaseModel):
     writeable: bool = Field(description="Writeable")
     readable: bool = Field(description="Readable")
     unit: Optional[str] = Field(default=None, description="SPEC unit")
-    value_range: Optional[MIoTSpecValueRange] = Field(default=None, description="SPEC value range")
-    value_list: Optional[List[MIoTSpecValueListItem]] = Field(default=None, description="SPEC value list")
+    value_range: Optional[MIoTSpecValueRange] = Field(
+        default=None, description="SPEC value range"
+    )
+    value_list: Optional[List[MIoTSpecValueListItem]] = Field(
+        default=None, description="SPEC value list"
+    )
+    # Catalog-injection fields (PR1: spec pre-injection plan).
+    type_name: Optional[str] = Field(
+        default=None,
+        description="property/action type_name parsed from URN segment[3]",
+    )
+    service_type_name: Optional[str] = Field(
+        default=None,
+        description="service type_name parsed from service URN segment[3]",
+    )
+    service_description: Optional[str] = Field(
+        default=None, description="Translated service description"
+    )
+    in_params: Optional[List[MIoTSpecLiteActionParam]] = Field(
+        default=None,
+        description="Structured action input parameters (action-only)",
+    )
+    prop_description: Optional[str] = Field(
+        default=None,
+        description="Original English property/action description from miot-spec",
+    )
 
 
 class _MIoTSpecMultiLang:
     """MIoT SPEC multi lang class."""
+
     _DOMAIN: str = "miot_specs_multi_lang"
     _storage: MIoTStorage
     _lang: str
@@ -450,7 +564,7 @@ class _MIoTSpecMultiLang:
         self,
         storage: MIoTStorage,
         lang: Optional[str] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         self._storage = storage
         self._lang = lang or SYSTEM_LANGUAGE_DEFAULT
@@ -481,19 +595,17 @@ class _MIoTSpecMultiLang:
                     trans_cache = trans_cloud.get("zh_tw", {})
             else:
                 trans_cache = trans_cloud.get(self._lang, {})
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:
             trans_cloud = {}
             _LOGGER.info("get multi lang from cloud failed, %s, %s", urn, err)
         # Get multi lang from local
         try:
             trans_local = await self._storage.load_async(
-                domain=self._DOMAIN, name=urn, type_=Dict)  # type: ignore
-            if (
-                isinstance(trans_local, Dict)
-                and self._lang in trans_local
-            ):
+                domain=self._DOMAIN, name=urn, type_=Dict
+            )  # type: ignore
+            if isinstance(trans_local, Dict) and self._lang in trans_local:
                 trans_cache.update(trans_local[self._lang])
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:
             trans_local = {}
             _LOGGER.info("get multi lang from local failed, %s, %s", urn, err)
         # Default language
@@ -501,8 +613,7 @@ class _MIoTSpecMultiLang:
             if trans_cloud and SYSTEM_LANGUAGE_DEFAULT in trans_cloud:
                 trans_cache = trans_cloud[SYSTEM_LANGUAGE_DEFAULT]
             if trans_local and SYSTEM_LANGUAGE_DEFAULT in trans_local:
-                trans_cache.update(
-                    trans_local[SYSTEM_LANGUAGE_DEFAULT])
+                trans_cache.update(trans_local[SYSTEM_LANGUAGE_DEFAULT])
         trans_data: Dict[str, str] = {}
         for tag, value in trans_cache.items():
             if value is None or value.strip() == "":
@@ -515,15 +626,14 @@ class _MIoTSpecMultiLang:
             if strs_len == 2:
                 trans_data[f"s:{int(strs[1])}"] = value
             elif strs_len == 4:
-                type_ = "p" if strs[2] == "property" else (
-                    "a" if strs[2] == "action" else "e")
-                trans_data[
-                    f"{type_}:{int(strs[1])}:{int(strs[3])}"
-                ] = value
+                type_ = (
+                    "p"
+                    if strs[2] == "property"
+                    else ("a" if strs[2] == "action" else "e")
+                )
+                trans_data[f"{type_}:{int(strs[1])}:{int(strs[3])}"] = value
             elif strs_len == 6:
-                trans_data[
-                    f"v:{int(strs[1])}:{int(strs[3])}:{int(strs[5])}"
-                ] = value
+                trans_data[f"v:{int(strs[1])}:{int(strs[3])}:{int(strs[5])}"] = value
 
         self._custom_cache[urn] = trans_data
         self._current_data = trans_data
@@ -538,7 +648,8 @@ class _MIoTSpecMultiLang:
         res_trans = await http_get_json_async(
             url="https://miot-spec.org/instance/v2/multiLanguage",
             params={"urn": urn},
-            loop=self._main_loop)
+            loop=self._main_loop,
+        )
         if (
             not isinstance(res_trans, Dict)
             or "data" not in res_trans
@@ -552,6 +663,7 @@ class _SpecBoolTranslation:
     """
     Boolean value translation.
     """
+
     _BOOL_TRANS_FILE = "specs/bool_trans.yaml"
     _main_loop: asyncio.AbstractEventLoop
     _lang: str
@@ -561,7 +673,7 @@ class _SpecBoolTranslation:
     def __init__(
         self, lang: str, loop: Optional[asyncio.AbstractEventLoop] = None
     ) -> None:
-        self._main_loop = loop or asyncio.get_event_loop()
+        self._main_loop = loop or asyncio.get_running_loop()
         self._lang = lang
         self._data = None
         self._data_default = None
@@ -574,10 +686,9 @@ class _SpecBoolTranslation:
         self._data = {}
         try:
             data = await self._main_loop.run_in_executor(
-                None,
-                load_yaml_file,
-                str(Path(__file__).parent / self._BOOL_TRANS_FILE))
-        except Exception as err:  # pylint: disable=broad-exception-caught
+                None, load_yaml_file, str(Path(__file__).parent / self._BOOL_TRANS_FILE)
+            )
+        except Exception as err:
             _LOGGER.error("bool trans, load file error, %s", err)
             return
         # Check if the file is a valid file
@@ -592,28 +703,26 @@ class _SpecBoolTranslation:
             return
 
         if "default" in data["translate"]:
-            data_default = (
-                data["translate"]["default"].get(self._lang, None)
-                or data["translate"]["default"].get(
-                    SYSTEM_LANGUAGE_DEFAULT, None))
+            data_default = data["translate"]["default"].get(self._lang, None) or data[
+                "translate"
+            ]["default"].get(SYSTEM_LANGUAGE_DEFAULT, None)
             if data_default:
                 self._data_default = [
                     {"value": True, "description": data_default["true"]},
-                    {"value": False, "description": data_default["false"]}
+                    {"value": False, "description": data_default["false"]},
                 ]
 
         for urn, key in data["data"].items():
             if key not in data["translate"]:
                 _LOGGER.error("bool trans, unknown key, %s, %s", urn, key)
                 continue
-            trans_data = (
-                data["translate"][key].get(self._lang, None)
-                or data["translate"][key].get(
-                    SYSTEM_LANGUAGE_DEFAULT, None))
+            trans_data = data["translate"][key].get(self._lang, None) or data[
+                "translate"
+            ][key].get(SYSTEM_LANGUAGE_DEFAULT, None)
             if trans_data:
                 self._data[urn] = [
                     {"value": True, "description": trans_data["true"]},
-                    {"value": False, "description": trans_data["false"]}
+                    {"value": False, "description": trans_data["false"]},
                 ]
 
     async def deinit_async(self) -> None:
@@ -638,13 +747,14 @@ class _SpecFilter:
     """
     MIoT-Spec-V2 filter for entity conversion.
     """
+
     _SPEC_FILTER_FILE = "specs/spec_filter.yaml"
     _main_loop: asyncio.AbstractEventLoop
     _data: Optional[Dict[str, Dict[str, set]]]
     _cache: Optional[Dict]
 
     def __init__(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
-        self._main_loop = loop or asyncio.get_event_loop()
+        self._main_loop = loop or asyncio.get_running_loop()
         self._data = None
         self._cache = None
 
@@ -658,8 +768,9 @@ class _SpecFilter:
             filter_data = await self._main_loop.run_in_executor(
                 None,
                 load_yaml_file,
-                str(Path(__file__).parent / self._SPEC_FILTER_FILE))
-        except Exception as err:  # pylint: disable=broad-exception-caught
+                str(Path(__file__).parent / self._SPEC_FILTER_FILE),
+            )
+        except Exception as err:
             _LOGGER.error("spec filter, load file error, %s", err)
             return
         if not isinstance(filter_data, Dict):
@@ -693,9 +804,7 @@ class _SpecFilter:
         if (
             self._cache
             and "services" in self._cache
-            and (
-                str(siid) in self._cache["services"]
-                or "*" in self._cache["services"])
+            and (str(siid) in self._cache["services"] or "*" in self._cache["services"])
         ):
             return True
 
@@ -709,7 +818,8 @@ class _SpecFilter:
             and "properties" in self._cache
             and (
                 f"{siid}.{piid}" in self._cache["properties"]
-                or f"{siid}.*" in self._cache["properties"])
+                or f"{siid}.*" in self._cache["properties"]
+            )
         ):
             return True
         return False
@@ -729,14 +839,15 @@ class _SpecFilter:
         return False
 
     def filter_action(self, siid: int, aiid: int) -> bool:
-        """"Filter action by aiid.
+        """ "Filter action by aiid.
         MUST call init_async() and set_spec_spec() first."""
         if (
             self._cache
             and "actions" in self._cache
             and (
                 f"{siid}.{aiid}" in self._cache["actions"]
-                or f"{siid}.*" in self._cache["actions"])
+                or f"{siid}.*" in self._cache["actions"]
+            )
         ):
             return True
         return False
@@ -744,14 +855,13 @@ class _SpecFilter:
 
 class _SpecModify:
     """MIoT-Spec-V2 modify for entity conversion."""
+
     _SPEC_MODIFY_FILE = "specs/spec_modify.yaml"
     _main_loop: asyncio.AbstractEventLoop
     _data: Optional[Dict]
     _selected: Optional[Dict]
 
-    def __init__(
-        self, loop: Optional[asyncio.AbstractEventLoop] = None
-    ) -> None:
+    def __init__(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         self._main_loop = loop or asyncio.get_running_loop()
         self._data = None
 
@@ -766,8 +876,9 @@ class _SpecModify:
             modify_data = await self._main_loop.run_in_executor(
                 None,
                 load_yaml_file,
-                str(Path(__file__).parent / self._SPEC_MODIFY_FILE))
-        except Exception as err:  # pylint: disable=broad-exception-caught
+                str(Path(__file__).parent / self._SPEC_MODIFY_FILE),
+            )
+        except Exception as err:
             _LOGGER.error("spec modify, load file error, %s", err)
             return
         if not isinstance(modify_data, Dict):
@@ -818,36 +929,51 @@ class _SpecModify:
 
 class MIoTSpecServiceType(BaseModel):
     """MIoT-Spec-V2 service type."""
+
     description: Dict[str, str] = Field(default_factory=dict, description="Description")
     required_properties: List[str] = Field(
-        default_factory=list, alias="required-properties", description="Required properties")
+        default_factory=list,
+        alias="required-properties",
+        description="Required properties",
+    )
     optional_properties: List[str] = Field(
-        default_factory=list, alias="optional-properties", description="Optional properties")
+        default_factory=list,
+        alias="optional-properties",
+        description="Optional properties",
+    )
     required_actions: List[str] = Field(
-        default_factory=list, alias="required-actions", description="Required actions")
+        default_factory=list, alias="required-actions", description="Required actions"
+    )
     optional_actions: List[str] = Field(
-        default_factory=list, alias="optional-actions", description="Optional actions")
+        default_factory=list, alias="optional-actions", description="Optional actions"
+    )
     required_events: List[str] = Field(
-        default_factory=list, alias="required-events", description="Required events")
+        default_factory=list, alias="required-events", description="Required events"
+    )
     optional_events: List[str] = Field(
-        default_factory=list, alias="optional-events", description="Optional events")
+        default_factory=list, alias="optional-events", description="Optional events"
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
 
 class MIoTSpecDeviceType(BaseModel):
     """MIoT-Spec-V2 device type."""
+
     description: Dict[str, str] = Field(description="Description")
     required_services: List[str] = Field(
-        default_factory=list, alias="required-services", description="Required services")
+        default_factory=list, alias="required-services", description="Required services"
+    )
     optional_services: List[str] = Field(
-        default_factory=list, alias="optional-services", description="Optional services")
+        default_factory=list, alias="optional-services", description="Optional services"
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
 
 class MIoTSpecType(BaseModel):
     """MIoT-Spec-V2 type."""
+
     ts: int = Field(default=0, description="Timestamp")
     devices: Dict[str, MIoTSpecDeviceType] = Field(description="Devices types")
     services: Dict[str, MIoTSpecServiceType] = Field(description="Services types")
@@ -855,6 +981,7 @@ class MIoTSpecType(BaseModel):
 
 class MIoTSpecTypeClass:
     """MIoT-Spec-V2 types."""
+
     _DOMAIN = "miot_specs"
     _NAME = "spec_types"
     _main_loop: asyncio.AbstractEventLoop
@@ -862,7 +989,9 @@ class MIoTSpecTypeClass:
 
     _data: MIoTSpecType
 
-    def __init__(self, storage: MIoTStorage, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+    def __init__(
+        self, storage: MIoTStorage, loop: Optional[asyncio.AbstractEventLoop] = None
+    ) -> None:
         self._main_loop = loop or asyncio.get_running_loop()
         self._storage = storage
 
@@ -873,8 +1002,13 @@ class MIoTSpecTypeClass:
 
     async def init_async(self) -> None:
         """Init."""
-        cache = await self._storage.load_async(domain=self._DOMAIN, name=self._NAME, type_=dict)
-        if isinstance(cache, Dict) and int(time.time()) - cache.get("ts", 0) < SPEC_STD_LIB_EFFECTIVE_TIME:
+        cache = await self._storage.load_async(
+            domain=self._DOMAIN, name=self._NAME, type_=dict
+        )
+        if (
+            isinstance(cache, Dict)
+            and int(time.time()) - cache.get("ts", 0) < SPEC_STD_LIB_EFFECTIVE_TIME
+        ):
             self._data = MIoTSpecType.model_validate(obj=cache)
             _LOGGER.info("load spec types from cache, %s", self._data.ts)
             return
@@ -882,14 +1016,18 @@ class MIoTSpecTypeClass:
         if not await self.refresh_async():
             if isinstance(cache, Dict) and "devices" in cache and "services" in cache:
                 self._data = MIoTSpecType.model_validate(obj=cache)
-                _LOGGER.info("load spec types from cache failed, use cache, %s", self._data.ts)
+                _LOGGER.info(
+                    "load spec types from cache failed, use cache, %s", self._data.ts
+                )
             else:
                 _LOGGER.error("load spec types failed")
 
     async def deinit_async(self) -> None:
         """Deinit."""
 
-    def get_service_type(self, device_name: str, service_name: str) -> MIoTSpecTypeLevel:
+    def get_service_type(
+        self, device_name: str, service_name: str
+    ) -> MIoTSpecTypeLevel:
         """Get device type."""
         if device_name not in self._data.devices:
             return MIoTSpecTypeLevel.UNKNOWN
@@ -899,7 +1037,9 @@ class MIoTSpecTypeClass:
             return MIoTSpecTypeLevel.OPTIONAL
         return MIoTSpecTypeLevel.UNKNOWN
 
-    def get_property_type(self, service_name: str, property_name: str) -> MIoTSpecTypeLevel:
+    def get_property_type(
+        self, service_name: str, property_name: str
+    ) -> MIoTSpecTypeLevel:
         """Get property type."""
         if service_name not in self._data.services:
             return MIoTSpecTypeLevel.UNKNOWN
@@ -940,83 +1080,126 @@ class MIoTSpecTypeClass:
             _LOGGER.error("get service types failed")
             return False
 
-        self._data = MIoTSpecType.model_validate(obj={
-            "ts": int(time.time()),
-            "devices": device_types,
-            "services": service_types
-        })
+        self._data = MIoTSpecType.model_validate(
+            obj={
+                "ts": int(time.time()),
+                "devices": device_types,
+                "services": service_types,
+            }
+        )
         if not await self._storage.save_async(
-                domain=self._DOMAIN, name=self._NAME, data=self._data.model_dump(by_alias=True)):
+            domain=self._DOMAIN,
+            name=self._NAME,
+            data=self._data.model_dump(by_alias=True),
+        ):
             _LOGGER.error("save spec types failed")
         return True
 
     async def __get_device_types(self) -> Optional[Dict[str, MIoTSpecDeviceType]]:
         """Get device types."""
         type_list: Dict[str, List[str]] = await http_get_json_async(
-            url="http://miot-spec.org/miot-spec-v2/spec/devices", loop=self._main_loop)
+            url="http://miot-spec.org/miot-spec-v2/spec/devices", loop=self._main_loop
+        )
         if "types" not in type_list or not isinstance(type_list["types"], List):
             _LOGGER.error("get device types failed, invalid types")
             return None
         task_list = []
         for type_item in type_list["types"]:
-            task_list.append(http_get_json_async(
-                url="https://miot-spec.org/miot-spec-v2/spec/device?type="+type_item,
-                loop=self._main_loop))
-        task_result = await asyncio.gather(*task_list, return_exceptions=True)
+            task_list.append(
+                http_get_json_async(
+                    url="https://miot-spec.org/miot-spec-v2/spec/device?type="
+                    + type_item,
+                    loop=self._main_loop,
+                )
+            )
+        task_result = await _bounded_gather(task_list, return_exceptions=True)
         result: Dict[str, MIoTSpecDeviceType] = {}
         for type_device, type_info in zip(type_list["types"], task_result):
             if not isinstance(type_info, Dict):
-                _LOGGER.error("get device types failed, invalid type info, %s, %s", type_device, type_info)
+                _LOGGER.error(
+                    "get device types failed, invalid type info, %s, %s",
+                    type_device,
+                    type_info,
+                )
                 continue
-            result[type_device.split(":")[3]] = MIoTSpecDeviceType.model_validate(obj={
-                "description": {"en": type_info.get("description", "")},
-                "required-services": [
-                    type_service.split(":")[3] for type_service in type_info.get("required-services", [])
-                    if type_service.split(":")[3] != "device-information"],
-                "optional-services": [
-                    type_service.split(":")[3] for type_service in type_info.get("optional-services", [])]
-            })
+            result[type_device.split(":")[3]] = MIoTSpecDeviceType.model_validate(
+                obj={
+                    "description": {"en": type_info.get("description", "")},
+                    "required-services": [
+                        type_service.split(":")[3]
+                        for type_service in type_info.get("required-services", [])
+                        if type_service.split(":")[3] != "device-information"
+                    ],
+                    "optional-services": [
+                        type_service.split(":")[3]
+                        for type_service in type_info.get("optional-services", [])
+                    ],
+                }
+            )
         return result
 
     async def __get_service_types(self) -> Optional[Dict[str, MIoTSpecServiceType]]:
         """Get service types."""
         type_list: Dict[str, List[str]] = await http_get_json_async(
-            url="http://miot-spec.org/miot-spec-v2/spec/services", loop=self._main_loop)
+            url="http://miot-spec.org/miot-spec-v2/spec/services", loop=self._main_loop
+        )
         if "types" not in type_list or not isinstance(type_list["types"], List):
             _LOGGER.error("get service types failed, invalid types")
             return None
         task_list = []
         for type_item in type_list["types"]:
-            task_list.append(http_get_json_async(
-                url="https://miot-spec.org/miot-spec-v2/spec/service?type="+type_item,
-                loop=self._main_loop))
-        task_result = await asyncio.gather(*task_list, return_exceptions=True)
+            task_list.append(
+                http_get_json_async(
+                    url="https://miot-spec.org/miot-spec-v2/spec/service?type="
+                    + type_item,
+                    loop=self._main_loop,
+                )
+            )
+        task_result = await _bounded_gather(task_list, return_exceptions=True)
         result: Dict[str, MIoTSpecServiceType] = {}
         for type_service, type_info in zip(type_list["types"], task_result):
             if not isinstance(type_info, Dict):
-                _LOGGER.error("get service types failed, invalid type info, %s, %s", type_service, type_info)
+                _LOGGER.error(
+                    "get service types failed, invalid type info, %s, %s",
+                    type_service,
+                    type_info,
+                )
                 continue
-            result[type_service.split(":")[3]] = MIoTSpecServiceType.model_validate(obj={
-                "description": {"en": type_info.get("description", "")},
-                "required-properties": [
-                    type_prop.split(":")[3] for type_prop in type_info.get("required-properties", [])],
-                "optional-properties": [
-                    type_prop.split(":")[3] for type_prop in type_info.get("optional-properties", [])],
-                "required-actions": [
-                    type_action.split(":")[3] for type_action in type_info.get("required-actions", [])],
-                "optional-actions": [
-                    type_action.split(":")[3] for type_action in type_info.get("optional-actions", [])],
-                "required-events": [
-                    type_event.split(":")[3] for type_event in type_info.get("required-events", [])],
-                "optional-events": [
-                    type_event.split(":")[3] for type_event in type_info.get("optional-events", [])],
-            })
+            result[type_service.split(":")[3]] = MIoTSpecServiceType.model_validate(
+                obj={
+                    "description": {"en": type_info.get("description", "")},
+                    "required-properties": [
+                        type_prop.split(":")[3]
+                        for type_prop in type_info.get("required-properties", [])
+                    ],
+                    "optional-properties": [
+                        type_prop.split(":")[3]
+                        for type_prop in type_info.get("optional-properties", [])
+                    ],
+                    "required-actions": [
+                        type_action.split(":")[3]
+                        for type_action in type_info.get("required-actions", [])
+                    ],
+                    "optional-actions": [
+                        type_action.split(":")[3]
+                        for type_action in type_info.get("optional-actions", [])
+                    ],
+                    "required-events": [
+                        type_event.split(":")[3]
+                        for type_event in type_info.get("required-events", [])
+                    ],
+                    "optional-events": [
+                        type_event.split(":")[3]
+                        for type_event in type_info.get("optional-events", [])
+                    ],
+                }
+            )
         return result
 
 
 class MIoTSpecParser:
     """MIoT SPEC parser."""
-    # pylint: disable=inconsistent-quotes
+
     VERSION: int = 1
     _DOMAIN: str = "miot_specs"
     _lang: str
@@ -1036,31 +1219,43 @@ class MIoTSpecParser:
         self,
         storage: MIoTStorage,
         lang: Optional[str],
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         self._lang = lang or SYSTEM_LANGUAGE_DEFAULT
         self._storage = storage
         self._main_loop = loop or asyncio.get_running_loop()
-        self._std_lib = _MIoTSpecStdLibClass(storage=self._storage, lang=self._lang, loop=self._main_loop)
-        self._spec_types = MIoTSpecTypeClass(storage=self._storage, loop=self._main_loop)
-        self._multi_lang = _MIoTSpecMultiLang(storage=self._storage, lang=self._lang, loop=self._main_loop)
+        self._std_lib = _MIoTSpecStdLibClass(
+            storage=self._storage, lang=self._lang, loop=self._main_loop
+        )
+        self._spec_types = MIoTSpecTypeClass(
+            storage=self._storage, loop=self._main_loop
+        )
+        self._multi_lang = _MIoTSpecMultiLang(
+            storage=self._storage, lang=self._lang, loop=self._main_loop
+        )
         self._bool_trans = _SpecBoolTranslation(lang=self._lang, loop=self._main_loop)
         self._spec_filter = _SpecFilter(loop=self._main_loop)
         # self._spec_modify = _SpecModify(loop=self._main_loop)
 
         self._init_done = False
+        # 惰性初始化由 parse_async 触发，且 refresh_async 会并发 fan-out 多个 parse_async；
+        # 用锁 + 双重检查保证首次并发只跑一次目录拉取，不会同时打多份。
+        self._init_lock = asyncio.Lock()
 
     async def init_async(self) -> None:
-        """Init."""
+        """Init. 幂等且并发安全：首次真正解析时由 parse_async 惰性触发。"""
         if self._init_done is True:
             return
-        await self._std_lib.init_async()
-        await self._spec_types.init_async()
-        await self._bool_trans.init_async()
-        await self._spec_filter.init_async()
-        # await self._spec_modify.init_async()
+        async with self._init_lock:
+            if self._init_done is True:  # 双重检查：等锁期间可能已被别的协程初始化
+                return
+            await self._std_lib.init_async()
+            await self._spec_types.init_async()
+            await self._bool_trans.init_async()
+            await self._spec_filter.init_async()
+            # await self._spec_modify.init_async()
 
-        self._init_done = True
+            self._init_done = True
 
     async def deinit_async(self) -> None:
         """Deinit."""
@@ -1072,19 +1267,24 @@ class MIoTSpecParser:
         # await self._spec_modify.deinit_async()
 
     async def parse_async(
-        self, urn: str, skip_cache: bool = False,
+        self,
+        urn: str,
+        skip_cache: bool = False,
     ) -> Optional[MIoTSpecDevice]:
-        """MUST await init first !!!"""
+        """Parse a device spec. 解析器在此惰性自初始化，无需调用方先 init。"""
         if not skip_cache:
             cache_result = await self.__cache_get(urn=urn)
             if isinstance(cache_result, Dict):
                 _LOGGER.debug("get from cache, %s", urn)
                 return MIoTSpecDevice(**cache_result)
+        # 缓存未命中、确需联网解析 → 此处才惰性加载标准库 + 类型目录（幂等 + 并发安全）。
+        # 缓存命中的设备直接走上面 return，不触发任何 spec 目录请求。
+        await self.init_async()
         # Retry three times
         for index in range(3):
             try:
                 return await self.__parse(urn=urn)
-            except Exception as err:  # pylint: disable=broad-exception-caught
+            except Exception as err:
                 _LOGGER.error("parse error, retry, %d, %s, %s", index, urn, err)
         return None
 
@@ -1107,6 +1307,8 @@ class MIoTSpecParser:
                 continue
             if spec_service.type_level < spec_service_level:
                 continue
+            service_type_name = _urn_type_name(spec_service.type_)
+            service_desc = spec_service.description_trans
             for spec_property in spec_service.properties:
                 if not skip_proprietary and spec_property.proprietary:
                     continue
@@ -1124,6 +1326,11 @@ class MIoTSpecParser:
                     readable=spec_property.readable,
                     value_range=spec_property.value_range,
                     value_list=spec_property.value_list,
+                    unit=spec_property.unit,
+                    type_name=_urn_type_name(spec_property.type_),
+                    service_type_name=service_type_name,
+                    service_description=service_desc,
+                    prop_description=spec_property.description or None,
                 )
             for spec_action in spec_service.actions:
                 if not skip_proprietary and spec_action.proprietary:
@@ -1135,18 +1342,30 @@ class MIoTSpecParser:
                 if spec_service.description_trans != spec_action.description_trans:
                     name += f" {spec_action.description_trans}"
                 in_list = []
+                in_params: List[MIoTSpecLiteActionParam] = []
                 for spec_property in spec_action.in_:
-                    in_list.append(f"{spec_property.description_trans}: {spec_property.format}")
-                    # for spec_property in spec_service.properties:
-                    #     if spec_property.iid == prop_iid:
-                    #         in_list.append(f"{spec_property.description_trans}: {spec_property.format}")
-                    #         break
+                    in_list.append(
+                        f"{spec_property.description_trans}: {spec_property.format}"
+                    )
+                    in_params.append(
+                        MIoTSpecLiteActionParam(
+                            name=_urn_type_name(spec_property.type_)
+                            or spec_property.name
+                            or spec_property.description_trans,
+                            format=spec_property.format,
+                        )
+                    )
                 result[iid] = MIoTSpecDeviceLite(
                     iid=iid,
                     description=name,
                     format=json.dumps(in_list, ensure_ascii=False),
                     writeable=True,
-                    readable=False
+                    readable=False,
+                    type_name=_urn_type_name(spec_action.type_),
+                    service_type_name=service_type_name,
+                    service_description=service_desc,
+                    in_params=in_params or None,
+                    prop_description=spec_action.description or None,
                 )
         return result
 
@@ -1158,8 +1377,11 @@ class MIoTSpecParser:
             raise MIoTSpecError("get spec std lib failed")
         success_count = 0
         for index in range(0, len(urn_list), 5):
-            batch = urn_list[index:index+5]
-            task_list = [self._main_loop.create_task(self.parse_async(urn=urn, skip_cache=True)) for urn in batch]
+            batch = urn_list[index : index + 5]
+            task_list = [
+                self._main_loop.create_task(self.parse_async(urn=urn, skip_cache=True))
+                for urn in batch
+            ]
             results = await asyncio.gather(*task_list)
             success_count += sum(1 for result in results if result is not None)
         return success_count
@@ -1168,20 +1390,22 @@ class MIoTSpecParser:
         if platform.system() == "Windows":
             urn = urn.replace(":", "_")
         return await self._storage.load_async(
-            domain=self._DOMAIN,
-            name=f"{urn}_{self._lang}",
-            type_=dict)  # type: ignore
+            domain=self._DOMAIN, name=f"{urn}_{self._lang}", type_=dict
+        )  # type: ignore
 
     async def __cache_set(self, urn: str, data: Dict) -> bool:
         if platform.system() == "Windows":
             urn = urn.replace(":", "_")
-        return await self._storage.save_async(domain=self._DOMAIN, name=f"{urn}_{self._lang}", data=data)
+        return await self._storage.save_async(
+            domain=self._DOMAIN, name=f"{urn}_{self._lang}", data=data
+        )
 
     async def __get_instance(self, urn: str) -> Optional[Dict]:
         return await http_get_json_async(
             url="https://miot-spec.org/miot-spec-v2/instance",
             params={"type": urn},
-            loop=self._main_loop)
+            loop=self._main_loop,
+        )
 
     async def __parse(self, urn: str) -> MIoTSpecDevice:
         _LOGGER.debug("parse urn, %s", urn)
@@ -1210,11 +1434,17 @@ class MIoTSpecParser:
             description_trans=(
                 self._std_lib.device_translate(key=":".join(urn_strs[:5]))
                 or instance["description"]
-                or urn_strs[3]))
+                or urn_strs[3]
+            ),
+        )
         # Parse services
         spec_device.services = []
         for service in instance.get("services", []):
-            if "iid" not in service or "type" not in service or "description" not in service:
+            if (
+                "iid" not in service
+                or "type" not in service
+                or "description" not in service
+            ):
                 _LOGGER.error("invalid service, %s, %s", urn, service)
                 continue
             type_strs: List[str] = service["type"].split(":")
@@ -1230,13 +1460,17 @@ class MIoTSpecParser:
                     self._multi_lang.translate(key=f"s:{service['iid']}")
                     or self._std_lib.service_translate(key=":".join(type_strs[:5]))
                     or service["description"]
-                    or type_strs[3])
+                    or type_strs[3]
+                ),
             )
             # Get spec service type level
             spec_service.type_level = self._spec_types.get_service_type(
-                device_name=urn_strs[3], service_name=type_strs[3])
+                device_name=urn_strs[3], service_name=type_strs[3]
+            )
             # Filter spec service
-            spec_service.need_filter = self._spec_filter.filter_service(siid=service["iid"])
+            spec_service.need_filter = self._spec_filter.filter_service(
+                siid=service["iid"]
+            )
             if type_strs[1] != "miot-spec-v2":
                 spec_service.proprietary = True
             # Parse service property
@@ -1259,27 +1493,38 @@ class MIoTSpecParser:
                     type=property_["type"],
                     description=property_["description"],
                     description_trans=(
-                        self._multi_lang.translate(key=f"p:{service['iid']}:{property_['iid']}")
-                        or self._std_lib.property_translate(key=":".join(p_type_strs[:5]))
+                        self._multi_lang.translate(
+                            key=f"p:{service['iid']}:{property_['iid']}"
+                        )
+                        or self._std_lib.property_translate(
+                            key=":".join(p_type_strs[:5])
+                        )
                         or property_["description"]
-                        or p_type_strs[3]),
+                        or p_type_strs[3]
+                    ),
                     format=property_["format"],
                     access=property_["access"],
-                    unit=unit if unit != "none" else None)
+                    unit=unit if unit != "none" else None,
+                )
                 # Get spec property type level
                 spec_prop.type_level = self._spec_types.get_property_type(
-                    service_name=type_strs[3], property_name=p_type_strs[3])
+                    service_name=type_strs[3], property_name=p_type_strs[3]
+                )
                 # Filter spec property
                 spec_prop.need_filter = (
-                    spec_service.need_filter or self._spec_filter.filter_property(
-                        siid=service["iid"], piid=property_["iid"]))
+                    spec_service.need_filter
+                    or self._spec_filter.filter_property(
+                        siid=service["iid"], piid=property_["iid"]
+                    )
+                )
                 if p_type_strs[1] != "miot-spec-v2":
                     spec_prop.proprietary = spec_service.proprietary or True
                 if "value-range" in property_:
                     spec_prop.value_range = MIoTSpecValueRange(
                         min=property_["value-range"][0],
                         max=property_["value-range"][1],
-                        step=property_["value-range"][2])
+                        step=property_["value-range"][2],
+                    )
                 elif "value-list" in property_:
                     v_list: List[Dict] = property_["value-list"]
                     spec_prop.value_list = []
@@ -1288,10 +1533,17 @@ class MIoTSpecParser:
                             v["description"] = f"v_{v['value']}"
                         v["name"] = v["description"]
                         v["description"] = (
-                            self._multi_lang.translate(key=f"v:{service['iid']}:{property_['iid']}:{index}")
-                            or self._std_lib.value_translate(key=f"{type_strs[:5]}|{p_type_strs[3]}|{v['description']}")
-                            or v["name"])
-                        spec_prop.value_list.append(MIoTSpecValueListItem.model_validate(obj=v))
+                            self._multi_lang.translate(
+                                key=f"v:{service['iid']}:{property_['iid']}:{index}"
+                            )
+                            or self._std_lib.value_translate(
+                                key=f"{type_strs[:5]}|{p_type_strs[3]}|{v['description']}"
+                            )
+                            or v["name"]
+                        )
+                        spec_prop.value_list.append(
+                            MIoTSpecValueListItem.model_validate(obj=v)
+                        )
                 # elif property_["format"] == "bool":
                 #     v_tag = ":".join(p_type_strs[:5])
                 #     v_descriptions = await self._bool_trans.translate_async(urn=v_tag)
@@ -1323,19 +1575,25 @@ class MIoTSpecParser:
                     type=event["type"],
                     description=event["description"],
                     description_trans=(
-                        self._multi_lang.translate(key=f"e:{service['iid']}:{event['iid']}")
+                        self._multi_lang.translate(
+                            key=f"e:{service['iid']}:{event['iid']}"
+                        )
                         or self._std_lib.event_translate(key=":".join(e_type_strs[:5]))
                         or event["description"]
                         or e_type_strs[3]
-                    )
+                    ),
                 )
                 # Get spec event type level
                 spec_event.type_level = self._spec_types.get_event_type(
-                    service_name=type_strs[3], event_name=e_type_strs[3])
+                    service_name=type_strs[3], event_name=e_type_strs[3]
+                )
                 # Filter spec event
                 spec_event.need_filter = (
                     spec_service.need_filter
-                    or self._spec_filter.filter_event(siid=service["iid"], eiid=event["iid"]))
+                    or self._spec_filter.filter_event(
+                        siid=service["iid"], eiid=event["iid"]
+                    )
+                )
                 if e_type_strs[1] != "miot-spec-v2":
                     spec_event.proprietary = spec_service.proprietary or True
                 arg_list: List[MIoTSpecProperty] = []
@@ -1363,19 +1621,25 @@ class MIoTSpecParser:
                     type=action["type"],
                     description=action["description"],
                     description_trans=(
-                        self._multi_lang.translate(key=f"a:{service['iid']}:{action['iid']}")
+                        self._multi_lang.translate(
+                            key=f"a:{service['iid']}:{action['iid']}"
+                        )
                         or self._std_lib.action_translate(key=":".join(a_type_strs[:5]))
                         or action["description"]
                         or a_type_strs[3]
-                    )
+                    ),
                 )
                 # Get spec action type level
                 spec_action.type_level = self._spec_types.get_action_type(
-                    service_name=type_strs[3], action_name=a_type_strs[3])
+                    service_name=type_strs[3], action_name=a_type_strs[3]
+                )
                 # Filter spec action
                 spec_action.need_filter = (
                     spec_service.need_filter
-                    or self._spec_filter.filter_action(siid=service["iid"], aiid=action["iid"]))
+                    or self._spec_filter.filter_action(
+                        siid=service["iid"], aiid=action["iid"]
+                    )
+                )
                 if a_type_strs[1] != "miot-spec-v2":
                     spec_action.proprietary = spec_service.proprietary or True
                 in_list: List[MIoTSpecProperty] = []
@@ -1395,5 +1659,7 @@ class MIoTSpecParser:
                 spec_service.actions.append(spec_action)
             spec_device.services.append(spec_service)
 
-        await self.__cache_set(urn=urn, data=spec_device.model_dump(by_alias=True, exclude_none=True))
+        await self.__cache_set(
+            urn=urn, data=spec_device.model_dump(by_alias=True, exclude_none=True)
+        )
         return spec_device

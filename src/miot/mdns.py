@@ -4,29 +4,22 @@
 """
 mDNS server for MIoT.
 """
+
 import asyncio
 import base64
 import binascii
+import logging
 from enum import Enum
 from typing import Dict, List, Optional
-import logging
 
-from zeroconf import (
-    DNSQuestionType,
-    IPVersion,
-    ServiceStateChange,
-    Zeroconf)
-from zeroconf.asyncio import (
-    AsyncServiceInfo,
-    AsyncZeroconf,
-    AsyncServiceBrowser)
-
+from zeroconf import DNSQuestionType, IPVersion, ServiceStateChange, Zeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 _LOGGER = logging.getLogger(__name__)
 
 MDNS_SUPPORT_TYPE_LIST = {
     "_miot-central._tcp.local.": {"name": "MIoT Central Service"},
-    "_home-assistant._tcp.local.": {"name": "Home Assistant Service"}
+    "_home-assistant._tcp.local.": {"name": "Home Assistant Service"},
 }
 
 MIPS_MDNS_REQUEST_TIMEOUT_MS = 5000
@@ -35,6 +28,7 @@ MIPS_MDNS_UPDATE_INTERVAL_S = 600
 
 class MdnsServiceError(Exception):
     """mDNS service error."""
+
     code: int
     message: str
 
@@ -49,6 +43,7 @@ class MdnsServiceError(Exception):
 
 class MdnsServiceState(str, Enum):
     """mDNS service state."""
+
     ADDED = "added"
     REMOVED = "removed"
     UPDATED = "updated"
@@ -56,6 +51,7 @@ class MdnsServiceState(str, Enum):
 
 class MipsServiceData:
     """Mips service data."""
+
     profile: str
     profile_bin: bytes
 
@@ -81,8 +77,7 @@ class MipsServiceData:
             raise MdnsServiceError("invalid service profile")
         self.profile_bin = base64.b64decode(self.profile)
         self.name = service_info.name
-        self.addresses = service_info.parsed_addresses(
-            version=IPVersion.V4Only)
+        self.addresses = service_info.parsed_addresses(version=IPVersion.V4Only)
         if not self.addresses:
             raise MdnsServiceError("invalid addresses")
         self.addresses.sort()
@@ -93,8 +88,7 @@ class MipsServiceData:
         self.server = service_info.server or ""
         # Parse profile
         self.did = str(int.from_bytes(self.profile_bin[1:9], byteorder="big"))
-        self.group_id = binascii.hexlify(
-            self.profile_bin[9:17][::-1]).decode("utf-8")
+        self.group_id = binascii.hexlify(self.profile_bin[9:17][::-1]).decode("utf-8")
         self.role = int(self.profile_bin[20] >> 4)
         self.suite_mqtt = ((self.profile_bin[22] >> 1) & 0x01) == 0x01
 
@@ -113,7 +107,7 @@ class MipsServiceData:
             "did": self.did,
             "group_id": self.group_id,
             "role": self.role,
-            "suite_mqtt": self.suite_mqtt
+            "suite_mqtt": self.suite_mqtt,
         }
 
     def __str__(self) -> str:
@@ -122,13 +116,15 @@ class MipsServiceData:
 
 class MdnsService:
     """mDNS service discovery."""
+
     _aiozc: AsyncZeroconf
     _main_loop: asyncio.AbstractEventLoop
     _aio_browser: AsyncServiceBrowser
 
     def __init__(
-        self, aiozc: Optional[AsyncZeroconf] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        self,
+        aiozc: Optional[AsyncZeroconf] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         self._aiozc = aiozc or AsyncZeroconf()
         self._main_loop = loop or asyncio.get_running_loop()
@@ -145,23 +141,29 @@ class MdnsService:
             zeroconf=self._aiozc.zeroconf,
             type_=list(MDNS_SUPPORT_TYPE_LIST.keys()),
             handlers=[self.__on_service_state_change],
-            question_type=DNSQuestionType.QM)
+            question_type=DNSQuestionType.QM,
+        )
 
     async def deinit_async(self) -> None:
         """Deinit mDNS service."""
         await self._aio_browser.async_cancel()
 
     def __on_service_state_change(
-            self, zeroconf: Zeroconf, service_type: str, name: str,
-            state_change: ServiceStateChange
+        self,
+        zeroconf: Zeroconf,
+        service_type: str,
+        name: str,
+        state_change: ServiceStateChange,
     ) -> None:
         _LOGGER.debug(
-            "mdns service state changed, %s, %s, %s", state_change, name, service_type)
+            "mdns service state changed, %s, %s, %s", state_change, name, service_type
+        )
         if state_change is ServiceStateChange.Removed:
             _LOGGER.info("service removed: %s", name)
             return
         self._main_loop.create_task(
-            self.__request_service_info_async(zeroconf, service_type, name))
+            self.__request_service_info_async(zeroconf, service_type, name)
+        )
 
     async def __request_service_info_async(
         self, zeroconf: Zeroconf, service_type: str, name: str
